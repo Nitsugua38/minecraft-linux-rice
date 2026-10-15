@@ -1,0 +1,103 @@
+/* Minecraft login theme. 1rem = 1 "GUI pixel" (screen height / 270). */
+@font-face { font-family: "MCFont"; src: url("../assets/font.ttf"); font-display: block; }
+
+:root {
+  --p: max(55vw, 95vh);          /* camera distance, gives ~85 degree FOV */
+  --s: calc(var(--p) * 2);       /* cube edge length */
+  --pan-seconds: 180s;           /* seconds for one full turn of the panorama */
+  --top-rot: 0deg;               /* rotate the top face image if it looks wrong */
+  --bottom-rot: 0deg;            /* rotate the bottom face image if it looks wrong */
+}
+* { box-sizing: border-box; }
+html { font-size: calc(100vh / 270); height: 100%; background: #000; }
+body {
+  margin: 0; height: 100%; overflow: hidden; color: #fff;
+  font-family: "MCFont", "Monocraft", "Minecraft", monospace; font-size: 8rem;
+  font-variant-ligatures: none; user-select: none; -webkit-user-select: none;
+  transition: opacity .8s ease;
+}
+body.starting { opacity: 0; }
+
+/* ---------- panorama ---------- */
+#scene { position: fixed; inset: 0; perspective: var(--p); overflow: hidden; background: #1b2a3a; }
+#pitch { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform-style: preserve-3d;
+         animation: pitch 40s ease-in-out infinite alternate; }
+#cube  { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-style: preserve-3d;
+         animation: pan var(--pan-seconds) linear infinite; }
+.face  { position: absolute; width: calc(var(--s) + 2px); height: calc(var(--s) + 2px);
+         left: calc((var(--s) + 2px) / -2); top: calc((var(--s) + 2px) / -2); background-size: 100% 100%; }
+/* faces point inward; order = front, right, back, left, top, bottom (same as Minecraft's panorama_0..5) */
+.f0 {  transform: translateZ(calc(var(--p) * -1)); }
+.f1 {  transform: rotateY(-90deg)  translateZ(calc(var(--p) * -1)); }
+.f2 {  transform: rotateY(-180deg) translateZ(calc(var(--p) * -1)); }
+.f3 {  transform: rotateY(90deg)   translateZ(calc(var(--p) * -1)); }
+.f4 {  transform: rotateX(-90deg)  translateZ(calc(var(--p) * -1)) rotate(var(--top-rot)); }
+.f5 {  transform: rotateX(90deg)   translateZ(calc(var(--p) * -1)) rotate(var(--bottom-rot)); }
+@keyframes pan   { from { transform: rotateY(0deg); } to { transform: rotateY(-360deg); } }
+@keyframes pitch { from { transform: translateZ(var(--p)) rotateX(-6deg); } to { transform: translateZ(var(--p)) rotateX(8deg); } }
+
+#shade { position: fixed; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(0,0,0,0) 50%, rgba(0,0,0,.5) 100%),
+              linear-gradient(to bottom, rgba(0,0,0,.25), rgba(0,0,0,0) 30%); }
+
+/* dirt backdrop for the sub-screens */
+#dirt { position: fixed; inset: 0; display: none; background: #2d1f14 url("../assets/dirt.png");
+        background-size: 32rem 32rem; image-rendering: pixelated; filter: brightness(.45); }
+body[data-screen="login"] #dirt, body[data-screen="users"] #dirt { display: block; }
+body[data-screen="login"] #shade, body[data-screen="users"] #shade { display: none; }
+
+.screen { position: fixed; inset: 0; display: none; }
+.screen.active { display: block; }
+
+/* ---------- buttons ---------- */
+.mc-btn {
+  font: inherit; width: 200rem; height: 20rem; padding: 0; cursor: pointer; outline: none;
+  color: #e0e0e0; text-shadow: 1rem 1rem 0 #383838; background: #6f6f6f; border: 1rem solid #000;
+  box-shadow: inset 1rem 1rem 0 #ababab, inset -1rem -2rem 0 #3d3d3d;
+}
+.mc-btn:hover, .mc-btn:focus-visible {
+  background: #7886b8; color: #ffffa0;
+  box-shadow: inset 1rem 1rem 0 #b4bde6, inset -1rem -2rem 0 #3c466e;
+}
+.mc-btn:disabled { background: #4a4a4a; color: #9a9a9a; cursor: default;
+  box-shadow: inset 1rem 1rem 0 #6a6a6a, inset -1rem -2rem 0 #2a2a2a; }
+
+/* ---------- title screen ---------- */
+#logo-wrap { position: absolute; top: 30rem; left: 50%; transform: translateX(-50%); width: 274rem; }
+#logo { display: block; width: 100%; height: auto; image-rendering: pixelated; }
+#splash { position: absolute; right: -30rem; bottom: -8rem; white-space: nowrap; font-size: 12rem;
+  color: #ff0; text-shadow: 1rem 1rem 0 #3f3f00; transform: rotate(-20deg); pointer-events: none;
+  animation: splash .5s ease-in-out infinite alternate; }
+@keyframes splash { from { transform: rotate(-20deg) scale(1); } to { transform: rotate(-20deg) scale(1.1); } }
+#menu { position: absolute; top: 115rem; left: 50%; transform: translateX(-50%); width: 200rem;
+        display: flex; flex-direction: column; gap: 4rem; }
+#menu .gap { height: 8rem; }
+#menu .row { display: flex; gap: 4rem; }
+#menu .row .mc-btn { flex: 1; width: auto; }
+#foot-l, #foot-r { position: absolute; bottom: 3rem; text-shadow: 1rem 1rem 0 #3f3f3f; }
+#foot-l { left: 4rem; } #foot-r { right: 4rem; }
+
+/* ---------- password screen ---------- */
+h1 { margin: 0; font-weight: normal; font-size: 8rem; text-shadow: 1rem 1rem 0 #3f3f3f; }
+#login h1, #users h1 { position: absolute; top: 20rem; width: 100%; text-align: center; }
+#login-form { position: absolute; top: 60rem; left: 50%; transform: translateX(-50%); width: 200rem; }
+#login-label { color: #a0a0a0; margin-bottom: 4rem; }
+#pw { width: 100%; height: 20rem; padding: 0 4rem; font: inherit; color: #e0e0e0; background: #000;
+      border: 1rem solid #a0a0a0; outline: none; user-select: text; -webkit-user-select: text; }
+#pw:focus { border-color: #fff; }
+#login-msg { min-height: 16rem; margin: 8rem 0 4rem; text-align: center; color: #aaa; line-height: 1.3; }
+#login-msg.error { color: #ff5555; }
+#login-buttons { display: flex; flex-direction: column; gap: 4rem; }
+
+/* ---------- user list ---------- */
+#user-list { position: absolute; top: 36rem; bottom: 64rem; left: 50%; transform: translateX(-50%);
+  width: 260rem; overflow-y: auto; background: rgba(0,0,0,.5); border-top: 2rem solid #000; border-bottom: 2rem solid #000; }
+#user-list::-webkit-scrollbar { width: 0; }
+.user-row { display: flex; align-items: center; gap: 8rem; width: 100%; height: 36rem; padding: 2rem 4rem;
+  background: transparent; border: 1rem solid transparent; color: #fff; font: inherit; text-align: left; cursor: pointer; outline: none; }
+.user-row:hover, .user-row.sel { border-color: #a0a0a0; background: rgba(255,255,255,.06); }
+.avatar { width: 32rem; height: 32rem; flex: none; display: grid; place-items: center; background: #5b8a3c;
+  color: #fff; font-size: 14rem; text-shadow: 1rem 1rem 0 #2f4a1f; overflow: hidden; }
+.avatar img { width: 100%; height: 100%; image-rendering: pixelated; }
+.user-name { display: block; } .user-sub { display: block; color: #808080; }
+#users-buttons { position: absolute; bottom: 20rem; left: 50%; transform: translateX(-50%); width: 200rem; }
