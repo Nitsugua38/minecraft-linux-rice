@@ -60,7 +60,7 @@ cat > "${AUTOSTART}" <<EOD
 Type=Application
 Name=Minecraft loading screen
 Comment=Fake world-generation screen shown while the desktop loads
-Exec=${BIN} --duration ${DURATION} --scale 1.5
+Exec=${BIN} --duration ${DURATION} --scale 1.5 --ready-file auto
 Terminal=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true

@@ -1,0 +1,1502 @@
+#!/usr/bin/env python3
+"""Minecraft hotbar + HUD: your taskbar, launcher and system tray, drawn like the in-game HUD.
+"""
+
+import argparse, glob, json, os, re, shutil, signal, subprocess, sys, time
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("PangoCairo", "1.0")
+from gi.repository import Gtk, Gdk, Gio, GLib, GdkPixbuf, Pango, PangoCairo
+import cairo
+try:
+    gi.require_version("Wnck", "3.0")
+    from gi.repository import Wnck
+except (ValueError, ImportError):
+    Wnck = None
+try:
+    gi.require_version("GdkX11", "3.0")
+    from gi.repository import GdkX11
+except (ValueError, ImportError):
+    GdkX11 = None
+
+APP_ID = "org.minecraftdesktop.Hotbar"
+DEFAULT_ASSETS = "/usr/share/minecraft-desktop/desktop"
+CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "mc-desktop")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "hotbar.json")
+READY_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "mc-desktop-ready")
+FONT_FAMILIES = "Monocraft, Minecraft, monospace"
+FONT_EM = 9.0                      # Monocraft is 9 "pixels" per em; 1 pixel = 1 GUI px
+POWER_DIR = "/sys/class/power_supply"
+WIRELESS_FILE = "/proc/net/wireless"
+
+SLOTS = 9
+CHEST = SLOTS - 1
+BAR_W, BAR_H = 182, 22             # hotbar sprite size in GUI px
+HUD_H = 50                         # window height in GUI px: hotbar + XP bar + clock row + hearts row + armor row
+HUD_K = 0.9                        # hearts / armor / hunger are drawn at this fraction of the GUI scale
+CLOCK_K = 0.85                     # clock text size as a fraction of the normal text size
+DEFAULT_SCALE = 3                  # GUI scale (1080p game default would be 4; 3 keeps it a bit smaller)
+DEFAULT_STRIP = 0.30               # opacity of the dark strip behind the HUD while a program is open
+DEFAULT_SHOW = {"battery": "auto", "wifi": "auto", "volume": True, "clock": True, "updates": True}
+
+# First installed app of each group becomes a default slot.
+DEFAULT_CANDIDATES = [
+    ["firefox.desktop", "org.mozilla.firefox.desktop", "google-chrome.desktop", "chromium.desktop", "brave-browser.desktop"],
+    ["nemo.desktop", "org.gnome.Nautilus.desktop", "thunar.desktop"],
+    ["org.gnome.Terminal.desktop", "gnome-terminal.desktop", "xfce4-terminal.desktop", "kitty.desktop", "xterm.desktop"]
+]
+
+# What a click on each HUD element opens (first command that exists is used).
+PANEL_POWER = [["cinnamon-settings", "power"], ["gnome-control-center", "power"], ["xfce4-power-manager-settings"], ["mate-power-preferences"]]
+PANEL_NETWORK = [["cinnamon-settings", "network"], ["gnome-control-center", "wifi"], ["nm-connection-editor"]]
+PANEL_SOUND = [["cinnamon-settings", "sound"], ["gnome-control-center", "sound"], ["pavucontrol"]]
+PANEL_UPDATES = [["mintupdate"], ["update-manager"], ["gnome-software", "--mode=updates"], ["software-properties-gtk"]]
+
+
+# ----------------------------------------------------------------- config
+def app_info(desktop_id):
+    if not desktop_id:
+        return None
+    try:
+        return Gio.DesktopAppInfo.new(desktop_id)
+    except Exception:
+        return None
+
+
+def default_slots():
+    slots = []
+    for group in DEFAULT_CANDIDATES:
+        slots.append(next((d for d in group if app_info(d) is not None), None))
+    return slots
+
+
+def save_config(path, cfg):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = {"scale": cfg["scale"], "strip_alpha": cfg["strip_alpha"], "show": cfg["show"], "slots": cfg["slots"]}
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def load_config(path):
+    cfg = {"scale": DEFAULT_SCALE, "strip_alpha": DEFAULT_STRIP, "show": dict(DEFAULT_SHOW), "slots": None}
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            for k in ("scale", "strip_alpha", "slots"):
+                if k in data:
+                    cfg[k] = data[k]
+            if isinstance(data.get("show"), dict):
+                cfg["show"].update(data["show"])
+    except FileNotFoundError:
+        pass
+    except (ValueError, OSError) as e:
+        print("mc-hotbar: could not read %s (%s), using defaults" % (path, e), file=sys.stderr)
+    if not isinstance(cfg.get("slots"), list):
+        cfg["slots"] = default_slots()
+        try:
+            save_config(path, cfg)
+        except OSError as e:
+            print("mc-hotbar: could not write %s (%s)" % (path, e), file=sys.stderr)
+    slots = [s if isinstance(s, str) and s else None for s in cfg["slots"]][:SLOTS]
+    slots += [None] * (SLOTS - len(slots))
+    slots[CHEST] = None                                          # the chest slot cannot hold a pinned app
+    cfg["slots"] = slots
+    try:
+        cfg["scale"] = max(1, min(8, int(cfg["scale"])))
+    except (TypeError, ValueError):
+        cfg["scale"] = DEFAULT_SCALE
+    try:
+        cfg["strip_alpha"] = max(0.0, min(1.0, float(cfg["strip_alpha"])))
+    except (TypeError, ValueError):
+        cfg["strip_alpha"] = DEFAULT_STRIP
+    return cfg
+
+
+# ----------------------------------------------------------------- sprites
+def load_pixbuf(assets, name):
+    p = os.path.join(assets, name)
+    if os.path.isfile(p):
+        try:
+            return GdkPixbuf.Pixbuf.new_from_file(p)
+        except GLib.Error:
+            pass
+    return None
+
+
+def to_surface(pb):
+    return Gdk.cairo_surface_create_from_pixbuf(pb, 1, None) if pb is not None else None
+
+
+def load_sprites(assets):
+    bar, sel = load_pixbuf(assets, "hotbar.png"), load_pixbuf(assets, "hotbar_selection.png")
+    return to_surface(bar), to_surface(sel)
+
+
+# Minecraft HUD sprites
+HUD_FILES = ["heart_container", "heart_full", "heart_half", "armor_empty", "armor_half", "armor_full",
+             "food_empty", "food_full", "xp_bg", "xp_fill", "chest"]
+
+
+def rgb(v):
+    return ((v >> 16) & 255) / 255.0, ((v >> 8) & 255) / 255.0, (v & 255) / 255.0
+
+def load_hud_sprites(assets):
+    hud = {}
+    for name in HUD_FILES:
+        surf = to_surface(load_pixbuf(assets, name + ".png"))
+        if surf is not None:
+            hud[name] = surf
+    return hud
+
+
+def paint_sprite(cr, surf, x, y, s, alpha=1.0):
+    cr.save()
+    cr.translate(x, y)
+    cr.scale(s, s)
+    cr.set_source_surface(surf, 0, 0)
+    cr.get_source().set_filter(cairo.FILTER_NEAREST)
+    cr.paint_with_alpha(alpha)
+    cr.restore()
+
+
+def make_layout(cr, text, px):
+    layout = PangoCairo.create_layout(cr)
+    fd = Pango.FontDescription(FONT_FAMILIES)
+    fd.set_absolute_size(px * Pango.SCALE)
+    layout.set_font_description(fd)
+    layout.set_text(text, -1)
+    return layout
+
+
+
+# ----------------------------------------------------------------- system helpers
+def run_async(argv, cb):
+    """Run argv with the C locale, call cb(stdout) on the main loop when done (cb(None) on failure)."""
+    try:
+        launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        launcher.setenv("LC_ALL", "C", True)
+        proc = launcher.spawnv(argv)
+    except GLib.Error:
+        cb(None)
+        return
+
+    def done(p, res):
+        try:
+            _ok, out, _err = p.communicate_utf8_finish(res)
+            cb(out if p.get_successful() else None)
+        except GLib.Error:
+            cb(None)
+    proc.communicate_utf8_async(None, None, done)
+
+
+def run_quiet(argv):
+    try:
+        launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE)
+        launcher.setenv("LC_ALL", "C", True)
+        launcher.spawnv(argv)
+    except GLib.Error:
+        pass
+
+
+def open_first(cmds):
+    """Open the first settings program that is installed."""
+    for argv in cmds:
+        if shutil.which(argv[0]):
+            try:
+                Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE)
+                return True
+            except GLib.Error:
+                continue
+    print("mc-hotbar: none of these programs is installed: %s" % ", ".join(c[0] for c in cmds), file=sys.stderr)
+    return False
+
+
+def read_text(path):
+    with open(path) as f:
+        return f.read().strip()
+
+
+def read_battery():
+    """(percent, state) averaged over all system batteries, or None when there is none."""
+    caps, states = [], []
+    for d in sorted(glob.glob(os.path.join(POWER_DIR, "BAT*"))):
+        try:
+            if read_text(os.path.join(d, "type")) != "Battery":
+                continue
+            caps.append(int(read_text(os.path.join(d, "capacity"))))
+            states.append(read_text(os.path.join(d, "status")))
+        except (OSError, ValueError):
+            continue
+    if not caps:
+        return None
+    pct = sum(caps) / float(len(caps))
+    if "Charging" in states:
+        st = "Charging"
+    elif all(x == "Full" for x in states):
+        st = "Full"
+    elif "Discharging" in states:
+        st = "Discharging"
+    else:
+        st = "Idle"
+    return pct, st
+
+
+def read_wifi():
+    """Link quality in percent of the first wireless interface, or None when the PC has no wifi."""
+    try:
+        with open(WIRELESS_FILE) as f:
+            lines = f.read().splitlines()[2:]
+    except OSError:
+        return None
+    for ln in lines:
+        if ":" not in ln:
+            continue
+        _iface, rest = ln.split(":", 1)
+        fields = rest.split()
+        try:
+            q = float(fields[1].rstrip("."))
+        except (IndexError, ValueError):
+            continue
+        return max(0, min(100, int(round(q / 70.0 * 100))))
+    return None
+
+
+# ----------------------------------------------------------------- tooltip
+class Tip(Gtk.Window):
+    """Minecraft item tooltip: near-black box, purple border, white text with a shadow."""
+
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.POPUP)
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_accept_focus(False)
+        self.set_type_hint(Gdk.WindowTypeHint.TOOLTIP)
+        scr = self.get_screen()
+        vis = scr.get_rgba_visual()
+        if vis is not None and scr.is_composited():
+            self.set_visual(vis)
+        self.text, self.s = "", 3
+        self.connect("draw", self._draw)
+
+    def show_for(self, text, s, center_x, bottom_y, geo):
+        self.text, self.s = text, s
+        probe = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1))
+        tw, th = make_layout(probe, text, FONT_EM * s).get_pixel_size()
+        w, h = tw + 2 * 4 * s, th + 2 * 3 * s
+        x = max(geo.x, min(geo.x + geo.width - w, int(center_x - w / 2)))
+        self.resize(w, h)
+        self.move(x, int(bottom_y - h - 2 * s))
+        self.show_all()
+        self.queue_draw()
+
+    def _draw(self, _w, cr):
+        s = self.s
+        w, h = self.get_allocated_width(), self.get_allocated_height()
+        cr.set_operator(cairo.OPERATOR_SOURCE); cr.set_source_rgba(0, 0, 0, 0); cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+        cr.set_source_rgba(16 / 255, 0, 16 / 255, 0.94)                      # background with the 1 px corner notches
+        cr.rectangle(s, 0, w - 2 * s, h); cr.fill()
+        cr.rectangle(0, s, w, h - 2 * s); cr.fill()
+        grad = cairo.LinearGradient(0, 0, 0, h)
+        grad.add_color_stop_rgba(0, 80 / 255, 0, 1, 0.31)
+        grad.add_color_stop_rgba(1, 40 / 255, 0, 127 / 255, 0.31)
+        cr.set_source(grad)
+        for (x, y, ww, hh) in ((s, s, w - 2 * s, s), (s, h - 2 * s, w - 2 * s, s), (s, s, s, h - 2 * s), (w - 2 * s, s, s, h - 2 * s)):
+            cr.rectangle(x, y, ww, hh)
+        cr.fill()
+        layout = make_layout(cr, self.text, FONT_EM * s)
+        tw, th = layout.get_pixel_size()
+        x, y = (w - tw) // 2, (h - th) // 2
+        cr.move_to(x + s, y + s); cr.set_source_rgb(0.247, 0.247, 0.247); PangoCairo.show_layout(cr, layout)
+        cr.move_to(x, y); cr.set_source_rgb(1, 1, 1); PangoCairo.show_layout(cr, layout)
+
+
+# ----------------------------------------------------------------- calendar popup (the clock)
+class CalendarPop(Gtk.Window):
+    """Small calendar above the clock. Closes on Escape, on focus loss, or when you click the hotbar."""
+
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_keep_above(True)
+        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        frame = Gtk.Frame()
+        frame.set_shadow_type(Gtk.ShadowType.OUT)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_border_width(8)
+        self.cal = Gtk.Calendar()
+        self.chest = ChestPop(self)
+        box.add(self.cal)
+        frame.add(box)
+        self.add(frame)
+        self.connect("focus-out-event", lambda *_: (self.hide(), False)[1])
+        self.connect("key-press-event", lambda _w, ev: (self.hide(), True)[1] if ev.keyval == Gdk.KEY_Escape else False)
+
+    def toggle(self, center_x, bottom_y, geo, timestamp):
+        if self.get_visible():
+            self.hide()
+            return
+        now = time.localtime()
+        self.cal.select_month(now.tm_mon - 1, now.tm_year)
+        self.cal.select_day(now.tm_mday)
+        self.show_all()
+        nat = self.get_preferred_size()[1]
+        x = max(geo.x, min(geo.x + geo.width - nat.width, int(center_x - nat.width / 2)))
+        self.move(x, int(bottom_y - nat.height - 6))
+        self.present_with_time(timestamp) if timestamp else self.present()
+
+
+# ----------------------------------------------------------------- window matching (running apps)
+def match_keys(app):
+    keys = set()
+    did = app.get_id() or ""
+    keys.add(did[:-8].lower() if did.endswith(".desktop") else did.lower())
+    wm = app.get_startup_wm_class()
+    if wm:
+        keys.add(wm.lower())
+    exe = app.get_executable()
+    if exe:
+        keys.add(os.path.basename(exe).lower())
+    keys.add((app.get_name() or "").lower())
+    keys.discard("")
+    return keys
+
+
+def window_names(w):
+    names = set()
+    for getter in ("get_class_group_name", "get_class_instance_name"):
+        try:
+            v = getattr(w, getter)()
+        except Exception:
+            v = None
+        if v:
+            names.add(v.lower())
+    try:
+        a = w.get_application()
+        if a is not None and a.get_name():
+            names.add(a.get_name().lower())
+    except Exception:
+        pass
+    return names
+
+
+def names_match(names, keys):
+    for wn in names:
+        for k in keys:
+            if wn == k or (len(k) >= 4 and k in wn) or (len(wn) >= 4 and wn in k):
+                return True
+    return False
+
+
+
+
+
+# ----------------------------------------------------------------- chest popup (other open windows)
+class ChestPop(Gtk.Window):
+    """Minecraft-style grid above the chest slot with every open window that is not pinned.
+    Left click = bring it to the front, middle click = close it."""
+    PAD, CELL = 7, 18                                            # GUI px: panel border, slot size
+
+    def __init__(self, hb):
+        super().__init__(type=Gtk.WindowType.POPUP)
+        self.hb, self.items, self.hover, self.cols = hb, [], None, 1
+        self._hide_id = None
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_accept_focus(False)
+        scr = self.get_screen()
+        vis = scr.get_rgba_visual()
+        if vis is not None and scr.is_composited():
+            self.set_visual(vis)
+        self.add_events(Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.BUTTON_PRESS_MASK |
+                        Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+        self.connect("draw", lambda _w, cr: self.paint(cr, self.get_allocated_width(), self.get_allocated_height()))
+        self.connect("motion-notify-event", self.on_motion)
+        self.connect("button-press-event", self.on_button)
+        self.connect("enter-notify-event", lambda *_: (self.keep(), False)[1])
+        self.connect("leave-notify-event", self.on_leave)
+
+    # ---- show / hide
+    def show_for(self):
+        hb, s = self.hb, self.hb.scale
+        self.items = hb.chest_items()
+        n = max(1, len(self.items))
+        self.cols = min(9, n)
+        rows = -(-n // self.cols)
+        w, h = (2 * self.PAD + self.cols * self.CELL) * s, (2 * self.PAD + rows * self.CELL) * s
+        ox, oy = hb.origin()
+        right = ox + hb.L() + BAR_W * s                          # right edge lines up with the chest slot
+        x = max(hb.geo.x, min(hb.geo.x + hb.geo.width - w, right - w))
+        self.resize(w, h)
+        self.move(x, oy + hb.top_h - h)                          # sits right on top of the hotbar
+        self.keep()
+        self.show_all()
+        self.queue_draw()
+
+    def keep(self):
+        if self._hide_id is not None:
+            GLib.source_remove(self._hide_id)
+            self._hide_id = None
+
+    def schedule_hide(self, delay=250):
+        self.keep()
+        self._hide_id = GLib.timeout_add(delay, self._do_hide)
+
+    def _do_hide(self):
+        self._hide_id = None
+        self.hover = None
+        self.hb.tip.hide()
+        self.hide()
+        return False
+
+    # ---- drawing
+    def cell_at(self, x, y):
+        s, c = self.hb.scale, self.CELL
+        gx, gy = x / s - self.PAD, y / s - self.PAD
+        if gx < 0 or gy < 0:
+            return None
+        col, row = int(gx // c), int(gy // c)
+        i = row * self.cols + col
+        return i if col < self.cols and i < len(self.items) else None
+
+    def paint(self, cr, w, h):
+        s, P, C = self.hb.scale, self.PAD, self.CELL
+        cr.set_operator(cairo.OPERATOR_SOURCE); cr.set_source_rgba(0, 0, 0, 0); cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+
+        def box(x, y, bw, bh, color, a=1.0):
+            cr.set_source_rgba(*rgb(color), a)
+            cr.rectangle(x * s, y * s, bw * s, bh * s)
+            cr.fill()
+        gw, gh = w / s, h / s
+        box(1, 0, gw - 2, gh, 0x000000); box(0, 1, gw, gh - 2, 0x000000)          # panel with notched corners
+        box(1, 1, gw - 2, gh - 2, 0xC6C6C6)
+        box(1, 1, gw - 3, 1, 0xFFFFFF); box(1, 1, 1, gh - 3, 0xFFFFFF)            # light top/left edge
+        box(2, gh - 2, gw - 3, 1, 0x555555); box(gw - 2, 2, 1, gh - 3, 0x555555)  # dark bottom/right edge
+        for i in range(-(-max(1, len(self.items)) // self.cols) * self.cols):    # whole rows of slots, like a real chest
+            x, y = P + (i % self.cols) * C, P + (i // self.cols) * C
+            box(x, y, C, C, 0x373737); box(x + 1, y + 1, C - 1, C - 1, 0xFFFFFF)  # slot frame
+            box(x + 1, y + 1, C - 2, C - 2, 0x8B8B8B)
+            if i < len(self.items):
+                surf = self.items[i]["icon"]
+                if surf is not None:
+                    cr.save()
+                    cr.translate((x + 1) * s, (y + 1) * s)
+                    cr.scale(16 * s / surf.get_width(), 16 * s / surf.get_height())
+                    cr.set_source_surface(surf, 0, 0)
+                    cr.paint()
+                    cr.restore()
+                if i == self.hover:
+                    box(x + 1, y + 1, 16, 16, 0xFFFFFF, 0.5)                      # hover highlight
+
+    # ---- input
+    def on_motion(self, _w, ev):
+        i = self.cell_at(ev.x, ev.y)
+        if i != self.hover:
+            self.hover = i
+            self.queue_draw()
+            hb, s = self.hb, self.hb.scale
+            if i is None:
+                hb.tip.hide()
+            else:
+                px, py = self.get_position()
+                cx = px + (self.PAD + (i % self.cols) * self.CELL + self.CELL / 2) * s
+                cy = py + (self.PAD + (i // self.cols) * self.CELL) * s
+                hb.tip.show_for(self.items[i]["title"][:60], s, cx, cy, hb.geo)
+        return False
+
+    def on_button(self, _w, ev):
+        i = self.cell_at(ev.x, ev.y)
+        if i is None or ev.type != Gdk.EventType.BUTTON_PRESS:
+            return True
+        win = Wnck.Window.get(self.items[i]["xid"])              # look it up now: never keep Wnck windows around
+        if win is None:
+            return True
+        if ev.button == 1:
+            self.hb.focus_window(win)
+            self._do_hide()
+        elif ev.button == 2:
+            win.close(self.hb.server_time())
+        return True
+
+    def on_leave(self, *_):
+        self.hover = None
+        self.hb.tip.hide()
+        self.queue_draw()
+        self.schedule_hide()
+        return False
+
+
+
+
+
+
+# ----------------------------------------------------------------- the hotbar
+class Hotbar(Gtk.Window):
+    def __init__(self, config_path, assets, scale_override=None, no_struts=False, demo=False):
+        super().__init__()
+        self.config_path, self.assets, self.no_struts, self.demo = config_path, assets, no_struts, demo
+        self.cfg = load_config(config_path)
+        self.scale = scale_override or self.cfg["scale"]
+        self.bar_surf, self.sel_surf = load_sprites(assets)
+        self.hud = load_hud_sprites(assets)
+        self.hover, self.hover_key = None, None
+        self.apps, self.keys, self.icons = [None] * SLOTS, [set()] * SLOTS, [None] * SLOTS
+        self.running = [False] * SLOTS
+        self.active_slot = None
+        self.geo = None
+        self.win_w, self.win_h = 1920, HUD_H * self.scale   # win_h = height of the whole HUD area (hotbar window + HUD window)
+        self.hb_h = (BAR_H + 1) * self.scale                 # the hotbar window is only the hotbar row
+        self.top_h = self.win_h - self.hb_h                  # the HUD window sits above it, behind your apps
+        self.hud_win = HudWindow(self)
+        self.tip = Tip()
+        self.cal = CalendarPop()
+        self.chest = ChestPop(self)
+        self._reload_id = None
+
+        # system state
+        self.battery = None            # (percent, state) or None
+        self.wifi = None               # percent or None
+        self.ssid = None
+        self.vol, self.muted = None, False
+        self.updates = None            # None = not checked yet
+        self.dragging = False
+        self._vol_sent = 0.0
+        self._scroll_acc = 0.0
+        self._bob, self._bob_id = 0, None
+        self._minute = ""
+        # strip behind the HUD (fades in while a program is open)
+        self.strip_on, self.strip_cur, self._strip_id = False, 0.0, None
+
+        self.set_title("Minecraft hotbar")
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.set_accept_focus(False)
+        self.set_type_hint(Gdk.WindowTypeHint.DOCK)
+        self.set_skip_taskbar_hint(True); self.set_skip_pager_hint(True)
+        self.set_keep_above(True)
+        self.stick()
+        scr = self.get_screen()
+        vis = scr.get_rgba_visual()
+        if vis is not None and scr.is_composited():
+            self.set_visual(vis)
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK | Gdk.EventMask.POINTER_MOTION_MASK |
+                        Gdk.EventMask.LEAVE_NOTIFY_MASK | Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK |
+                        Gdk.EventMask.PROPERTY_CHANGE_MASK)
+        self.connect("draw", self.on_draw)
+        self.connect("button-press-event", self.on_button)
+        self.connect("button-release-event", self.on_release)
+        self.connect("motion-notify-event", self.on_motion)
+        self.connect("leave-notify-event", self.on_leave)
+        self.connect("scroll-event", self.on_scroll)
+        self.connect("map-event", self.on_map)
+        self.connect("size-allocate", lambda *_: self.update_input_shape())
+        scr.connect("monitors-changed", lambda *_: self.place())
+        scr.connect("size-changed", lambda *_: self.place())
+        self._refresh_id = None
+
+        self.wnck = None
+        if Wnck is not None:
+            try:
+                Wnck.set_client_type(Wnck.ClientType.PAGER)
+                self.wnck = Wnck.Screen.get_default()
+                self.wnck.force_update()
+                self.wnck.connect("window-opened", self.on_window_opened)
+                for sig in ("window-closed", "active-window-changed", "active-workspace-changed"):
+                    self.wnck.connect(sig, self.schedule_refresh)
+                for w in self.wnck.get_windows():
+                    self.watch_window(w)
+            except Exception as e:
+                print("mc-hotbar: window tracking unavailable (%s)" % e, file=sys.stderr)
+                self.wnck = None
+
+        try:                                                     # reload when the config file changes (inventory pins apps)
+            self.monitor = Gio.File.new_for_path(config_path).monitor_file(Gio.FileMonitorFlags.NONE, None)
+            self.monitor.connect("changed", self.on_config_changed)
+        except GLib.Error:
+            self.monitor = None
+        Gtk.IconTheme.get_default().connect("changed", lambda *_: self.reload_apps())
+
+        self.reload_apps()
+        self.place()
+        self.start_monitors()
+
+    # ---- apps / icons
+    def reload_apps(self):
+        s = self.scale
+        theme = Gtk.IconTheme.get_default()
+        size = 16 * s
+        for i, did in enumerate(self.cfg["slots"]):
+            app = app_info(did)
+            self.apps[i] = app
+            self.keys[i] = match_keys(app) if app else set()
+            surf = None
+            if app is not None:
+                pb = None
+                icon = app.get_icon()
+                try:
+                    if icon is not None:
+                        info = theme.lookup_by_gicon(icon, size, Gtk.IconLookupFlags.FORCE_SIZE)
+                        pb = info.load_icon() if info is not None else None
+                    if pb is None:
+                        pb = theme.load_icon("application-x-executable", size, Gtk.IconLookupFlags.FORCE_SIZE)
+                except GLib.Error:
+                    pb = None
+                if pb is not None:
+                    surf = Gdk.cairo_surface_create_from_pixbuf(pb, 1, None)
+            self.icons[i] = surf
+        self.icons[CHEST] = self.hud.get("chest")
+        self.refresh_state()
+
+    def on_config_changed(self, _m, _f, _o, event):
+        if event in (Gio.FileMonitorEvent.CHANGES_DONE_HINT, Gio.FileMonitorEvent.CREATED, Gio.FileMonitorEvent.RENAMED):
+            if self._reload_id is None:
+                self._reload_id = GLib.timeout_add(200, self._do_reload)
+
+    def _do_reload(self):
+        self._reload_id = None
+        self.cfg = load_config(self.config_path)
+        self.reload_apps()
+        return False
+
+    # ---- placement
+    def monitor_geometry(self):
+        d = Gdk.Display.get_default()
+        m = d.get_primary_monitor() or d.get_monitor(0)
+        return m.get_geometry()
+
+    def L(self):
+        """Pixel x of the left edge of the hotbar sprite (the hotbar is centred in the full-width window)."""
+        return (self.win_w - BAR_W * self.scale) // 2
+
+    def place(self):
+        s = self.scale
+        self.geo = self.monitor_geometry()
+        self.win_w, self.win_h = self.geo.width, HUD_H * s
+        self.hb_h = (BAR_H + 1) * s
+        self.top_h = self.win_h - self.hb_h
+        w, h = self.win_w, self.hb_h
+        self.set_size_request(w, h)
+        self.resize(w, h)
+        self.move(self.geo.x, self.geo.y + self.geo.height - h)
+        self.hud_win.place()
+        self.apply_struts()
+        self.update_input_shape()
+        self.queue_draw()
+
+    def origin(self):
+        """Screen position of the top-left corner of the whole HUD area (hotbar window + HUD window)."""
+        return self.geo.x, self.geo.y + self.geo.height - self.win_h
+
+    def to_full(self, widget, x, y):
+        """Event coordinates of the hotbar window or the HUD window -> coordinates in the whole HUD area."""
+        return (x, y + self.top_h) if widget is self else (x + self.L(), y)
+
+    def queue_draw(self):
+        super().queue_draw()
+        hw = getattr(self, "hud_win", None)
+        if hw is not None:
+            hw.queue_draw()
+
+    def apply_struts(self):
+        """Tell the window manager to keep maximised windows above the hotbar (they cover the rest of the HUD)."""
+        if self.no_struts or GdkX11 is None:
+            return
+        gw = self.get_window()
+        if gw is None or not isinstance(gw, GdkX11.X11Window):
+            return
+        g = self.geo
+        bottom = Gdk.Screen.get_default().get_height() - (g.y + g.height) + self.hb_h
+        x0, x1 = g.x, g.x + g.width - 1
+        xid = str(gw.get_xid())
+        for prop, val in (("_NET_WM_STRUT_PARTIAL", "0,0,0,%d,0,0,0,0,0,0,%d,%d" % (bottom, x0, x1)),
+                          ("_NET_WM_STRUT", "0,0,0,%d" % bottom)):
+            try:
+                subprocess.run(["xprop", "-id", xid, "-f", prop, "32c", "-set", prop, val],
+                               check=False, capture_output=True, timeout=3)
+            except (OSError, subprocess.SubprocessError):
+                return
+
+    def update_input_shape(self):
+        """With no program open only the centre column takes clicks, so the desktop behind the empty sides stays usable."""
+        gw = self.get_window()
+        if gw is None:
+            return
+        s = self.scale
+        if self.strip_on:
+            region = cairo.Region(cairo.RectangleInt(0, 0, self.win_w, self.hb_h))
+        else:
+            region = cairo.Region(cairo.RectangleInt(self.L(), 0, BAR_W * s, self.hb_h))
+        try:
+            gw.input_shape_combine_region(region, 0, 0)
+        except Exception:
+            pass
+
+    def on_map(self, *_):
+        GLib.idle_add(self._after_map)
+
+    def _after_map(self):
+        self.place()                                             # some window managers ignore the first move
+        self.hud_win.show_all()
+        self.hud_win.place()
+        try:                                                     # tell the loading screen the desktop is ready
+            os.makedirs(os.path.dirname(READY_FILE), exist_ok=True)
+            open(READY_FILE, "w").close()
+        except OSError:
+            pass
+        return False
+
+    # ---- window tracking: running bars, focused slot, dark strip
+    def on_window_opened(self, _screen, win):
+        self.watch_window(win)
+        self.schedule_refresh()
+
+    def watch_window(self, win):
+        try:
+            win.connect("state-changed", self.schedule_refresh)
+            win.connect("workspace-changed", self.schedule_refresh)
+        except Exception:
+            pass
+
+    def schedule_refresh(self, *_):
+        """Refresh after Wnck has finished its own update, never from inside its signal."""
+        if self._refresh_id is None:
+            self._refresh_id = GLib.timeout_add(60, self._do_refresh)
+
+    def _do_refresh(self):
+        self._refresh_id = None
+        self.refresh_state()
+        return False
+
+    def windows_for(self, i):
+        if self.wnck is None or self.apps[i] is None:
+            return []
+        keys, out = self.keys[i], []
+        try:
+            for w in self.wnck.get_windows_stacked():            # bottom to top
+                if w.get_window_type() != Wnck.WindowType.NORMAL or w.is_skip_tasklist():
+                    continue
+                if names_match(window_names(w), keys):
+                    out.append(w)
+        except Exception:
+            return []
+        return out
+
+    def focused_slot(self):
+        """Slot of the app that owns the focused window (a dialog counts as its parent), or None."""
+        if self.wnck is None:
+            return None
+        try:
+            w = self.wnck.get_active_window()
+            cand = None
+            for _ in range(5):
+                if w is None:
+                    break
+                if w.get_window_type() in (Wnck.WindowType.NORMAL, Wnck.WindowType.DIALOG, Wnck.WindowType.UTILITY):
+                    names = window_names(w)
+                    for i in range(SLOTS):
+                        if self.apps[i] is not None and names_match(names, self.keys[i]):
+                            return i
+                    if w.get_window_type() == Wnck.WindowType.NORMAL:
+                        cand = w
+                w = w.get_transient()
+            if cand is not None and not cand.is_skip_tasklist():
+                return CHEST
+        except Exception:
+            pass
+        return None
+
+    def any_window_open(self):
+        if self.wnck is None:
+            return False
+        try:
+            ws = self.wnck.get_active_workspace()
+            for w in self.wnck.get_windows():
+                if w.get_window_type() != Wnck.WindowType.NORMAL or w.is_skip_tasklist() or w.is_minimized():
+                    continue
+                if ws is not None and not w.is_on_workspace(ws):
+                    continue
+                return True
+        except Exception:
+            pass
+        return False
+
+    def refresh_state(self, *_):
+        self.running = [bool(self.windows_for(i)) for i in range(SLOTS)]
+        self.active_slot = self.focused_slot()
+        self.set_strip(self.any_window_open())
+        if self.chest.get_visible():
+            self.chest.show_for()
+        self.queue_draw()
+
+    def set_strip(self, on):
+        if on == self.strip_on:
+            return
+        self.strip_on = on
+        self.update_input_shape()
+        if self._strip_id is None:
+            self._strip_id = GLib.timeout_add(30, self._strip_tick)
+
+    def _strip_tick(self):
+        target = self.cfg["strip_alpha"] if self.strip_on else 0.0
+        diff = target - self.strip_cur
+        if abs(diff) < 0.01:
+            self.strip_cur, self._strip_id = target, None
+            self.queue_draw()
+            return False
+        self.strip_cur += diff * 0.4
+        self.queue_draw()
+        return True
+
+    # ---- system monitors
+    def start_monitors(self):
+        if self.demo:
+            self.battery, self.wifi, self.ssid, self.vol, self.updates = (73.0, "Charging"), 60, "Demo-WiFi", 65, 12
+            self.set_battery(self.battery)
+        else:
+            self.poll_battery(); self.poll_wifi(); self.poll_volume()
+            GLib.timeout_add_seconds(10, self.poll_battery)
+            GLib.timeout_add_seconds(4, self.poll_wifi)
+            GLib.timeout_add_seconds(2, self.poll_volume)
+            GLib.timeout_add_seconds(20, self.poll_ssid)
+            GLib.timeout_add_seconds(5, self.poll_updates_once)
+            GLib.timeout_add_seconds(600, self.poll_updates)
+        self._minute = time.strftime("%H:%M")
+        GLib.timeout_add_seconds(1, self.tick_clock)
+
+    def tick_clock(self):
+        now = time.strftime("%H:%M")
+        if now != self._minute:
+            self._minute = now
+            self.queue_draw()
+        return True
+
+    def set_battery(self, value):
+        self.battery = value
+        charging = value is not None and value[1] == "Charging"
+        if charging and self._bob_id is None:
+            self._bob_id = GLib.timeout_add(90, self._bob_tick)
+        self.queue_draw()
+        self.refresh_tip()
+
+    def _bob_tick(self):
+        if self.battery is None or self.battery[1] != "Charging":
+            self._bob_id = None
+            self.queue_draw()
+            return False
+        self._bob = (self._bob + 1) % 14
+        self.queue_draw()
+        return True
+
+    def poll_battery(self):
+        self.set_battery(read_battery())
+        return True
+
+    def poll_wifi(self):
+        w = read_wifi()
+        if w != self.wifi:
+            self.wifi = w
+            self.queue_draw()
+            self.refresh_tip()
+        return True
+
+    def poll_ssid(self):
+        def got(out):
+            ssid = None
+            for ln in (out or "").splitlines():
+                if ln.startswith("*:"):
+                    ssid = ln[2:].replace("\\:", ":")
+                    break
+            if ssid != self.ssid:
+                self.ssid = ssid
+                self.refresh_tip()
+        run_async(["nmcli", "-t", "-f", "IN-USE,SSID", "dev", "wifi"], got)
+        return True
+
+    def poll_volume(self):
+        if self.dragging:
+            return True
+
+        def got_mute(out):
+            if out is not None and not self.dragging:
+                muted = "yes" in out.lower()
+                if muted != self.muted:
+                    self.muted = muted
+                    self.queue_draw(); self.refresh_tip()
+
+        def got_vol(out):
+            m = re.search(r"(\d+)%", out) if out else None
+            vol = int(m.group(1)) if m else None
+            if not self.dragging and vol != self.vol:
+                self.vol = vol
+                self.queue_draw(); self.refresh_tip()
+            if m:
+                run_async(["pactl", "get-sink-mute", "@DEFAULT_SINK@"], got_mute)
+        run_async(["pactl", "get-sink-volume", "@DEFAULT_SINK@"], got_vol)
+        return True
+
+    def poll_updates(self):
+        def got(out):
+            if out is None:
+                return
+            n = len(re.findall(r"\[upgradable from:", out))
+            if n != self.updates:
+                self.updates = n
+                self.queue_draw(); self.refresh_tip()
+        run_async(["apt", "list", "--upgradable"], got)
+        return True
+
+    def poll_updates_once(self):
+        self.poll_updates()
+        return False
+
+    # ---- volume
+    def push_volume(self, force=False):
+        now = time.monotonic()
+        if not force and now - self._vol_sent < 0.05:
+            return
+        self._vol_sent = now
+        run_quiet(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "%d%%" % int(self.vol)])
+
+    def set_volume(self, pct, force=False):
+        pct = max(0, min(100, int(round(pct))))
+        self.vol = pct
+        if self.muted and pct > 0:
+            self.muted = False
+            run_quiet(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"])
+        if not self.demo:
+            self.push_volume(force)
+        self.queue_draw()
+        self.refresh_tip()
+
+    def toggle_mute(self):
+        self.muted = not self.muted
+        if not self.demo:
+            run_quiet(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"])
+        self.queue_draw()
+        self.refresh_tip()
+
+    def volume_from_x(self, x):
+        return (x - self.L()) / float(BAR_W * self.scale) * 100.0
+
+    # ---- layout / hit-testing (pixels; GUI px * scale)
+    def shown(self, name):
+        v = self.cfg["show"].get(name, DEFAULT_SHOW[name])
+        if v == "auto":
+            return {"battery": self.battery is not None, "wifi": self.wifi is not None}.get(name, True)
+        return bool(v)
+
+    def rows(self):
+        """(icon scale, hearts y, armor y) in pixels: hearts sit right above the XP bar, armor above the hearts."""
+        s = self.scale
+        hs = s * HUD_K
+        hearts_y = (HUD_H - 30) * s - 9 * hs
+        return hs, hearts_y, hearts_y - s - 9 * hs
+
+    def regions(self):
+        s, L, H = self.scale, self.L(), HUD_H
+        hs, hy, ay = self.rows()
+        out = []
+        if self.shown("clock"):
+            out.append(("clock", L + (BAR_W // 2 - 13) * s, (H - 38) * s, 26 * s, 9 * s))
+        if self.shown("volume"):
+            out.append(("xp", L, (H - 30) * s, BAR_W * s, 7 * s))
+        if self.shown("battery"):
+            out.append(("battery", L, hy, 81 * hs, 9 * hs))
+        if self.shown("wifi"):
+            out.append(("wifi", L, ay, 81 * hs, 9 * hs))
+        if self.shown("updates"):
+            out.append(("hunger", L + BAR_W * s - 81 * hs, hy, 81 * hs, 9 * hs))
+        return out
+
+    def slot_at(self, x, y):
+        s = self.scale
+        gx, gy = (x - self.L()) / float(s), y / float(s) - (HUD_H - BAR_H)   # GUI px relative to the hotbar sprite
+        if 1 <= gx < BAR_W - 1 and 0 <= gy < BAR_H:
+            return max(0, min(SLOTS - 1, int((gx - 1) // 20)))
+        return None
+
+    def key_at(self, x, y):
+        i = self.slot_at(x, y)
+        if i is not None:
+            return ("slot", i)
+        for name, rx, ry, rw, rh in self.regions():
+            if rx <= x < rx + rw and ry <= y < ry + rh:
+                return (name, None)
+        return None
+
+    def key_rect(self, key):
+        s = self.scale
+        if key[0] == "slot":
+            return self.L() + s * (20 * key[1]), (HUD_H - BAR_H - 1) * s, 22 * s, BAR_H * s
+        for name, rx, ry, rw, rh in self.regions():
+            if name == key[0]:
+                return rx, ry, rw, rh
+        return None
+
+    # ---- drawing
+    def clear(self, cr):
+        cr.set_operator(cairo.OPERATOR_SOURCE); cr.set_source_rgba(0, 0, 0, 0); cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+
+    def on_draw(self, _w, cr):
+        self.win_w = self.get_allocated_width() or self.win_w
+        self.clear(cr)
+        cr.translate(0, -self.top_h)                             # draw in whole-HUD coordinates; this window is the bottom row
+        self.paint_bar(cr)
+
+    def paint(self, cr):
+        """The whole HUD in one go (used by --render-png)."""
+        self.clear(cr)
+        self.draw_hud(cr, self.L(), self.scale, HUD_H)
+        self.paint_bar(cr)
+
+    def paint_bar(self, cr):
+        s, L, H = self.scale, self.L(), HUD_H
+        if self.strip_cur > 0.003:
+            band = (BAR_H + 1) * s
+            cr.set_source_rgba(0, 0, 0, self.strip_cur)
+            cr.rectangle(0, H * s - band, self.win_w, band); cr.fill()
+        hy = (H - BAR_H) * s
+        if self.bar_surf is not None:
+            paint_sprite(cr, self.bar_surf, L, hy, s)
+        for i in range(SLOTS):
+            surf = self.icons[i]
+            if surf is None:
+                continue
+            x, y = L + s * (3 + 20 * i), hy + s * 3              # items are 16x16 GUI px, 3 px in from the slot corner
+            pw, ph = surf.get_width(), surf.get_height()
+            cr.save()
+            cr.translate(x, y)
+            cr.scale(16 * s / pw, 16 * s / ph)
+            cr.set_source_surface(surf, 0, 0)
+            cr.paint()
+            cr.restore()
+            if self.running[i]:                                  # running: item-durability-style bar under the icon
+                cr.set_source_rgb(0, 0, 0)
+                cr.rectangle(x + 2 * s, y + 13 * s, 13 * s, 2 * s); cr.fill()
+                cr.set_source_rgb(0.0, 1.0, 0.0)
+                cr.rectangle(x + 2 * s, y + 13 * s, 13 * s, s); cr.fill()
+        cur = self.hover if self.hover is not None else self.active_slot
+        if self.sel_surf is not None and cur is not None:        # the frame shows the focused app (or the hovered slot)
+            paint_sprite(cr, self.sel_surf, L + s * (20 * cur - 1), hy - s, s)
+
+    def draw_hud(self, cr, L, s, H):
+        hud = self.hud
+        hs, hy, ay = self.rows()
+
+        def put(name, x, y, alpha=1.0):
+            if name in hud:
+                paint_sprite(cr, hud[name], x, y, hs, alpha)
+
+        if self.shown("battery") and self.battery is not None:   # hearts = battery, 1 heart = 10 %
+            pct, state = self.battery
+            halves = int(round(pct / 5.0))
+            if pct > 0:
+                halves = max(1, halves)
+            for i in range(10):
+                y = hy
+                if state == "Charging" and i == self._bob:       # charging: one heart hops along, like regeneration
+                    y -= 2 * hs
+                x = L + 8 * i * hs
+                put("heart_container", x, y)
+                if halves >= 2 * i + 2:
+                    put("heart_full", x, y)
+                elif halves >= 2 * i + 1:
+                    put("heart_half", x, y)
+        if self.shown("wifi") and self.wifi is not None:         # armor = wifi strength, 1 piece = 10 %
+            halves = int(round(self.wifi / 5.0))
+            if self.wifi > 0:
+                halves = max(1, halves)
+            for i in range(10):
+                name = "armor_full" if halves >= 2 * i + 2 else ("armor_half" if halves >= 2 * i + 1 else "armor_empty")
+                put(name, L + 8 * i * hs, ay)
+        if self.shown("updates"):                                # hunger = updates: full when up to date, half when pending
+            n_full = 10 if not self.updates else 5
+            for i in range(10):                                  # icon 0 = leftmost; full ones first, empty ones to their right
+                x = L + BAR_W * s - 81 * hs + 8 * i * hs
+                put("food_empty", x, hy)                         # empty icon underneath = outline of the full one
+                if i < n_full:
+                    put("food_full", x, hy)
+        if self.shown("volume") and "xp_bg" in hud and "xp_fill" in hud:   # XP bar = volume
+            frac = (self.vol or 0) / 100.0
+            xy = (H - 29) * s
+            paint_sprite(cr, hud["xp_bg"], L, xy, s)
+            cr.save()
+            cr.rectangle(L, xy, int(round(frac * BAR_W)) * s, 5 * s); cr.clip()
+            paint_sprite(cr, hud["xp_fill"], L, xy, s, 0.35 if self.muted else 1.0)   # muted = faded bar
+            cr.restore()
+        if self.shown("clock"):                                  # XP level number = clock, its bottom touches the XP bar
+            layout = make_layout(cr, self._minute or time.strftime("%H:%M"), FONT_EM * s * CLOCK_K)
+            tw, _th = layout.get_pixel_size()
+            base = layout.get_baseline() / Pango.SCALE
+            x, y = (self.win_w - tw) // 2, (H - 28) * s - base
+            o = max(1, int(round(s * CLOCK_K)))
+            cr.set_source_rgb(0, 0, 0)
+            for dx, dy in ((o, 0), (-o, 0), (0, o), (0, -o)):
+                cr.move_to(x + dx, y + dy); PangoCairo.show_layout(cr, layout)
+            cr.set_source_rgb(0.502, 1.0, 0.125)
+            cr.move_to(x, y); PangoCairo.show_layout(cr, layout)
+
+    # ---- actions
+    def server_time(self):
+        t = Gtk.get_current_event_time()
+        if t:
+            return t
+        try:
+            return GdkX11.x11_get_server_time(self.get_window())
+        except Exception:
+            return 0
+
+    def launch(self, app):
+        try:
+            ctx = Gdk.Display.get_default().get_app_launch_context()
+            app.launch([], ctx)
+        except GLib.Error as e:
+            print("mc-hotbar: could not launch %s: %s" % (app.get_id(), e), file=sys.stderr)
+
+
+    def chest_items(self):
+        """Open windows that are not covered by a pinned slot: [{'xid', 'icon', 'title'}]."""
+        out = []
+        if self.wnck is None:
+            return out
+        theme = Gtk.IconTheme.get_default()
+        for w in self.wnck.get_windows():
+            if w.get_window_type() != Wnck.WindowType.NORMAL or w.is_skip_tasklist():
+                continue
+            names = window_names(w)
+            if any(self.apps[i] is not None and names_match(names, self.keys[i]) for i in range(SLOTS)):
+                continue
+            pb = w.get_icon()
+            if pb is None:
+                try:
+                    pb = theme.load_icon("application-x-executable", 32, Gtk.IconLookupFlags.FORCE_SIZE)
+                except GLib.Error:
+                    pb = None
+            out.append({"xid": w.get_xid(), "icon": Gdk.cairo_surface_create_from_pixbuf(pb, 1, None) if pb else None,
+                        "title": w.get_name() or w.get_class_group_name() or "?"})
+        return out
+
+    def focus_window(self, w):
+        ts = self.server_time()
+        if w.is_minimized():
+            w.unminimize(ts)
+        w.activate(ts)
+
+
+    def activate_slot(self, i):
+        if i == CHEST:                                           # Super+9 / click: show the chest for a moment
+            self.chest.show_for()
+            self.chest.schedule_hide(3000)
+            return
+        if not 0 <= i < SLOTS or self.apps[i] is None:
+            return
+        wins = self.windows_for(i)
+        if not wins:
+            self.launch(self.apps[i])
+            return
+        ts = self.server_time()
+        active = [w for w in wins if w.is_active()]
+        if active:
+            active[0].minimize()
+            return
+        top = wins[-1]
+        if top.is_minimized():
+            top.unminimize(ts)
+        top.activate(ts)
+
+    def unpin(self, i):
+        self.cfg["slots"][i] = None
+        try:
+            save_config(self.config_path, self.cfg)
+        except OSError as e:
+            print("mc-hotbar: could not save config: %s" % e, file=sys.stderr)
+        self.reload_apps()
+
+    # ---- tooltips
+    def tip_text(self, key):
+        kind = key[0]
+        if kind == "slot":
+            app = self.apps[key[1]]
+            return app.get_name() if app is not None else None
+        if kind == "battery" and self.battery is not None:
+            return "Battery: %d%% (%s)" % (round(self.battery[0]), self.battery[1])
+        if kind == "wifi":
+            if not self.wifi:
+                return "Wi-Fi: not connected"
+            return "Wi-Fi: %s (%d%%)" % (self.ssid, self.wifi) if self.ssid else "Wi-Fi: %d%%" % self.wifi
+        if kind == "hunger":
+            if self.updates is None:
+                return "Updates: checking..."
+            return "Up to date" if self.updates == 0 else "%d update%s available" % (self.updates, "" if self.updates == 1 else "s")
+        if kind == "xp":
+            if self.vol is None:
+                return "Volume: unavailable"
+            return "Volume: %d%%%s" % (self.vol, " (muted)" if self.muted else "")
+        if kind == "clock":
+            return time.strftime("%A %d %B %Y")
+        return None
+
+    def show_tip(self, key):
+        if key == ("slot", CHEST):
+            self.tip.hide()
+            return
+        text = self.tip_text(key) if key else None
+        rect = self.key_rect(key) if key else None
+        if not text or rect is None:
+            self.tip.hide()
+            return
+        win_x, win_y = self.origin()
+        rx, ry, rw, _rh = rect
+        self.tip.show_for(text, self.scale, win_x + rx + rw / 2, win_y + ry, self.geo)
+
+    def refresh_tip(self):
+        if self.hover_key is not None or self.dragging:
+            self.show_tip(self.hover_key)
+
+    # ---- input
+    def on_button(self, _w, ev):
+        if ev.type != Gdk.EventType.BUTTON_PRESS:
+            return True
+        fx, fy = self.to_full(_w, ev.x, ev.y)
+        key = self.key_at(fx, fy)
+        if key is None or key[0] != "clock":
+            self.cal.hide()
+        if key is None:
+            return True
+        kind = key[0]
+        if kind == "slot":
+            i = key[1]
+            if ev.button == 1:
+                self.activate_slot(i)
+            elif ev.button == 2 and self.apps[i] is not None:
+                self.launch(self.apps[i])
+            elif ev.button == 3 and self.apps[i] is not None:
+                menu = Gtk.Menu()
+                it_new = Gtk.MenuItem(label="New window")
+                it_new.connect("activate", lambda *_: self.launch(self.apps[i]))
+                it_un = Gtk.MenuItem(label="Remove from hotbar")
+                it_un.connect("activate", lambda *_: self.unpin(i))
+                menu.append(it_new); menu.append(it_un)
+                menu.show_all()
+                menu.popup_at_pointer(ev)
+        elif kind == "xp":
+            if ev.button == 1 and self.vol is not None:
+                self.dragging = True
+                self.set_volume(self.volume_from_x(fx))
+            elif ev.button == 3:
+                self.toggle_mute()
+            elif ev.button == 2:
+                open_first(PANEL_SOUND)
+        elif ev.button == 1:
+            if kind == "battery":
+                open_first(PANEL_POWER)
+            elif kind == "wifi":
+                open_first(PANEL_NETWORK)
+            elif kind == "hunger":
+                open_first(PANEL_UPDATES)
+                if not self.demo:
+                    GLib.timeout_add_seconds(90, self.poll_updates_once)   # re-check after you had time to install
+            elif kind == "clock":
+                rx, ry, rw, _rh = self.key_rect(key)
+                win_x, win_y = self.origin()
+                self.cal.toggle(win_x + rx + rw / 2, win_y + ry, self.geo, self.server_time())
+        return True
+
+    def on_release(self, _w, ev):
+        if self.dragging and ev.button == 1:
+            self.dragging = False
+            self.set_volume(self.volume_from_x(self.to_full(_w, ev.x, ev.y)[0]), force=True)
+        return True
+
+    def on_motion(self, _w, ev):
+        fx, fy = self.to_full(_w, ev.x, ev.y)
+        if self.dragging:
+            self.set_volume(self.volume_from_x(fx))
+            return True
+        key = self.key_at(fx, fy)
+        slot = key[1] if key and key[0] == "slot" else None
+        if key == ("slot", CHEST):
+            if self.chest.get_visible():
+                self.chest.keep()
+            else:
+                self.chest.show_for()
+        elif self.chest.get_visible():
+            self.chest.schedule_hide()
+        if slot != self.hover:
+            self.hover = slot
+            self.queue_draw()
+        if key != self.hover_key:
+            self.hover_key = key
+            self.show_tip(key)
+        return False
+
+    def on_leave(self, *_):
+        if self.dragging:
+            return False
+        self.hover, self.hover_key = None, None
+        self.tip.hide()
+        self.chest.schedule_hide()
+        self.queue_draw()
+        return False
+
+    def on_scroll(self, _w, ev):
+        key = self.key_at(*self.to_full(_w, ev.x, ev.y))
+        if key is None or key[0] != "xp" or self.vol is None:
+            return True
+        step = 0
+        if ev.direction == Gdk.ScrollDirection.UP:
+            step = 5
+        elif ev.direction == Gdk.ScrollDirection.DOWN:
+            step = -5
+        elif ev.direction == Gdk.ScrollDirection.SMOOTH:
+            ok, _dx, dy = ev.get_scroll_deltas()
+            if ok:
+                self._scroll_acc -= dy
+                if abs(self._scroll_acc) >= 1.0:
+                    step = 5 if self._scroll_acc > 0 else -5
+                    self._scroll_acc = 0.0
+        if step:
+            self.set_volume(self.vol + step, force=True)
+        return True
+
+
+# ----------------------------------------------------------------- HUD window (behind your apps)
+class HudWindow(Gtk.Window):
+    """Hearts, armor, XP bar, clock and hunger. It lives just above the hotbar but BEHIND normal windows,
+    so an opened app covers it and only the hotbar stays on top."""
+
+    def __init__(self, hb):
+        super().__init__()
+        self.hb = hb
+        self.set_title("Minecraft HUD")
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.set_accept_focus(False)
+        self.set_focus_on_map(False)
+        self.set_skip_taskbar_hint(True); self.set_skip_pager_hint(True)
+        self.set_keep_below(True)
+        self.stick()
+        scr = self.get_screen()
+        vis = scr.get_rgba_visual()
+        if vis is not None and scr.is_composited():
+            self.set_visual(vis)
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK | Gdk.EventMask.POINTER_MOTION_MASK |
+                        Gdk.EventMask.LEAVE_NOTIFY_MASK | Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
+        self.connect("draw", self.on_draw)
+        self.connect("button-press-event", hb.on_button)
+        self.connect("button-release-event", hb.on_release)
+        self.connect("motion-notify-event", hb.on_motion)
+        self.connect("leave-notify-event", hb.on_leave)
+        self.connect("scroll-event", hb.on_scroll)
+
+    def place(self):
+        hb = self.hb
+        w, h = BAR_W * hb.scale, hb.top_h
+        self.set_size_request(w, h)
+        self.resize(w, h)
+        ox, oy = hb.origin()
+        self.move(ox + hb.L(), oy)
+
+    def on_draw(self, _w, cr):
+        hb = self.hb
+        hb.clear(cr)
+        cr.translate(-hb.L(), 0)                                 # whole-HUD coordinates, this window is the top part
+        hb.draw_hud(cr, hb.L(), hb.scale, HUD_H)
+
+
+# ----------------------------------------------------------------- entry point
+def send_to_running(action, param=None):
+    """Ask an already running hotbar to do something. Returns False if none is running."""
+    app = Gtk.Application(application_id=APP_ID)
+    try:
+        app.register(None)
+    except GLib.Error:
+        return False
+    if not app.get_is_remote():
+        return False
+    app.activate_action(action, param)
+    try:
+        app.get_dbus_connection().flush_sync(None)
+    except Exception:
+        pass
+    return True
+
+
+def render_png(a):
+    """Write one frame to a PNG (no window is shown): handy to preview the look."""
+    w, h = (int(v) for v in a.size.lower().split("x"))
+    bar = Hotbar(a.config, a.assets, a.scale, True, a.demo)
+    bar.win_w, bar.win_h = w, HUD_H * bar.scale
+    bar.top_h = bar.win_h - bar.hb_h
+    bar.strip_cur = bar.cfg["strip_alpha"] if a.strip else 0.0
+    bar.active_slot = 0
+    surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, bar.win_h)
+    bar.paint(cairo.Context(surf))
+    surf.write_to_png(a.render_png)
+    print("wrote", a.render_png)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--slot", type=int, choices=range(1, SLOTS + 1), metavar="N", help="activate slot N (1-9)")
+    ap.add_argument("--quit", action="store_true", help="stop a running hotbar")
+    ap.add_argument("--config", default=CONFIG_FILE, help="config file (default %s)" % CONFIG_FILE)
+    ap.add_argument("--assets", default=os.environ.get("MC_DESKTOP_ASSETS", DEFAULT_ASSETS))
+    ap.add_argument("--scale", type=int, help="GUI scale, overrides the config file")
+    ap.add_argument("--no-struts", action="store_true", help="do not reserve screen space (windows may cover the hotbar)")
+    ap.add_argument("--demo", action="store_true", help="show made-up battery / wifi / volume / updates values")
+    ap.add_argument("--render-png", metavar="FILE", help="write one frame to FILE and exit")
+    ap.add_argument("--size", default="1920x1080", help="with --render-png: screen width x height")
+    ap.add_argument("--strip", action="store_true", help="with --render-png: draw the dark strip")
+    a = ap.parse_args()
+
+    if a.render_png:
+        render_png(a)
+        return
+    if a.quit:
+        send_to_running("quit")
+        return
+    if a.slot:
+        if send_to_running("slot", GLib.Variant.new_int32(a.slot)):
+            return
+        cfg = load_config(a.config)                              # no hotbar running: just launch the app
+        app = app_info(cfg["slots"][a.slot - 1])
+        if app is not None:
+            app.launch([], Gdk.Display.get_default().get_app_launch_context() if Gdk.Display.get_default() else None)
+        return
+
+    app = Gtk.Application(application_id=APP_ID)
+    state = {"bar": None}
+
+    def on_activate(_app):
+        if state["bar"] is None:
+            state["bar"] = Hotbar(a.config, a.assets, a.scale, a.no_struts, a.demo)
+            app.add_window(state["bar"])
+            state["bar"].show_all()
+            state["bar"].place()
+
+    app.connect("activate", on_activate)
+    act = Gio.SimpleAction.new("slot", GLib.VariantType.new("i"))
+    act.connect("activate", lambda _a, p: state["bar"] and state["bar"].activate_slot(p.get_int32() - 1))
+    app.add_action(act)
+    q = Gio.SimpleAction.new("quit", None)
+    q.connect("activate", lambda *_: app.quit())
+    app.add_action(q)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, lambda: (app.quit(), False)[1])
+    sys.exit(app.run([sys.argv[0]]))
+
+
+if __name__ == "__main__":
+    main()

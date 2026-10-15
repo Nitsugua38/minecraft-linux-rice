@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Per-user Cinnamon settings for the Minecraft desktop. Run as the normal user (the installer does this for you).
+
+  mc-world-setup --apply     set the world wallpaper, hide desktop icons, auto-hide the panel, add Super+1..9
+  mc-world-setup --restore   put everything back the way it was
+  mc-world-setup --status    show the current values
+"""
+import argparse, ast, glob, json, os, re, subprocess, sys
+
+CFG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "mc-desktop")
+BACKUP = os.path.join(CFG_DIR, "world-backup.json")
+ASSETS = os.environ.get("MC_DESKTOP_ASSETS", "/usr/share/minecraft-desktop/desktop")
+
+BG = "org.cinnamon.desktop.background"
+KB = "org.cinnamon.desktop.keybindings"
+KB_ONE = "org.cinnamon.desktop.keybindings.custom-keybinding"
+KB_PATH = "/org/cinnamon/desktop/keybindings/custom-keybindings/%s/"
+IDS = ["mc-hotbar-%d" % i for i in range(1, 10)]
+HOTBAR_CMD = "mc-hotbar --slot %d"
+
+# (schema, key) pairs that get backed up and restored
+TRACKED = [
+    ("org.nemo.desktop", "show-desktop-icons"),
+    (BG, "picture-uri"), (BG, "picture-options"), (BG + ".slideshow", "slideshow-enabled"),
+    ("org.cinnamon", "panels-autohide"),
+    ("org.cinnamon", "panels-enabled"),
+    (KB, "custom-list"),
+]
+
+
+def gs(*args):
+    try:
+        return subprocess.run(["gsettings", *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:
+        print("gsettings failed: %s" % e, file=sys.stderr)
+        return None
+
+
+def get(schema, key):
+    r = gs("get", schema, key)
+    return r.stdout.strip() if r is not None and r.returncode == 0 else None
+
+
+def put(schema, key, value):
+    r = gs("set", schema, key, value)
+    ok = r is not None and r.returncode == 0
+    if not ok:
+        print("could not set %s %s (%s)" % (schema, key, (r.stderr.strip() if r else "no gsettings")), file=sys.stderr)
+    return ok
+
+
+def parse_list(text):
+    """'@as []' or "['a', 'b']" -> python list"""
+    if not text:
+        return []
+    text = re.sub(r"^@as\s+", "", text.strip())
+    try:
+        v = ast.literal_eval(text)
+        return list(v) if isinstance(v, (list, tuple)) else []
+    except (ValueError, SyntaxError):
+        return []
+
+
+def quote_list(items):
+    return "[" + ", ".join("'%s'" % i for i in items) + "]"
+
+
+def world_file():
+    for pat in ("world.png", "world.jpg", "world.jpeg", "world.webp", "world.*"):
+        found = sorted(glob.glob(os.path.join(ASSETS, pat)))
+        if found:
+            return found[0]
+    return None
+
+
+def save_backup():
+    data = {}
+    if os.path.exists(BACKUP):
+        with open(BACKUP) as f:
+            data = json.load(f)
+    new = False
+    for s, k in TRACKED:
+        name = "%s %s" % (s, k)
+        if name not in data:
+            data[name] = get(s, k)
+            new = True
+    if new:
+        os.makedirs(CFG_DIR, exist_ok=True)
+        with open(BACKUP, "w") as f:
+            json.dump(data, f, indent=2)
+        print("saved your current settings to %s" % BACKUP)
+
+
+def apply():
+    if get("org.cinnamon", "panels-enabled") is None:
+        sys.exit("Cinnamon settings not found. Run this as your normal user inside a Cinnamon session.")
+    save_backup()
+
+    put("org.nemo.desktop", "show-desktop-icons", "false")
+    print("desktop icons hidden")
+
+    wp = world_file()
+    if wp:
+        put(BG, "picture-uri", "'file://%s'" % wp)
+        put(BG, "picture-options", "'zoom'")
+        put(BG + ".slideshow", "slideshow-enabled", "false")
+        print("wallpaper set to %s" % wp)
+    else:
+        print("no world image found in %s, wallpaper left alone" % ASSETS)
+
+    put("org.cinnamon", "panels-enabled", "[]")
+    print("panel removed (bring it back with: mc-world-setup --restore)")
+
+    ids = parse_list(get(KB, "custom-list"))
+    for i, kid in enumerate(IDS, start=1):
+        path = "%s:%s" % (KB_ONE, KB_PATH % kid)
+        put(path, "name", "'Minecraft hotbar slot %d'" % i)
+        put(path, "command", "'%s'" % (HOTBAR_CMD % i))
+        put(path, "binding", "['<Super>%d']" % i)
+        if kid not in ids:
+            ids.append(kid)
+    put(KB, "custom-list", quote_list(ids))
+    print("shortcuts added: Super+1 ... Super+9 activate the hotbar slots")
+
+
+def restore():
+    if not os.path.exists(BACKUP):
+        print("no backup found at %s, nothing to restore" % BACKUP)
+        return
+    with open(BACKUP) as f:
+        data = json.load(f)
+    for kid in IDS:                                              # remove our shortcuts first
+        path = "%s:%s" % (KB_ONE, KB_PATH % kid)
+        for key in ("name", "command", "binding"):
+            gs("reset", path, key)
+    for s, k in TRACKED:
+        val = data.get("%s %s" % (s, k))
+        if val is None:
+            gs("reset", s, k)
+        else:
+            put(s, k, val)
+    os.remove(BACKUP)
+    print("settings restored")
+
+
+def status():
+    for s, k in TRACKED:
+        print("%-45s %s" % ("%s %s" % (s, k), get(s, k)))
+    print("world image:", world_file())
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--apply", action="store_true")
+    g.add_argument("--restore", action="store_true")
+    g.add_argument("--status", action="store_true")
+    a = ap.parse_args()
+    if os.geteuid() == 0:
+        print("Run this as your normal user, not root (settings are per user).", file=sys.stderr)
+    if a.apply:
+        apply()
+    elif a.restore:
+        restore()
+    else:
+        status()
+
+
+if __name__ == "__main__":
+    main()

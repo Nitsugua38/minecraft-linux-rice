@@ -277,6 +277,9 @@ def main():
     ap.add_argument("--progress", type=float, default=0.68, help="progress (0-1) for --render-png")
     a = ap.parse_args()
 
+    if a.ready_file == "auto":
+        a.ready_file = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "mc-desktop-ready")
+
     if a.render_png:
         render_png(a.render_png, a.progress, a.assets, a.scale); return
 

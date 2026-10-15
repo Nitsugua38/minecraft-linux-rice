@@ -7,7 +7,7 @@ bg.b = 0.24;
 logo.y_ratio = 0.5;
 logo.max_width_ratio = 0.5;
 box.y_ratio = 0.8;
-bar.padding = 4;
+bar.padding = 8;
 # --------------------------------------------------------
 
 Window.SetBackgroundTopColor(bg.r, bg.g, bg.b);
