@@ -71,4 +71,4 @@ update-alternatives --set default.plymouth "${THEME_DIR}/${THEME_NAME}.plymouth"
 say "Rebuilding initramfs (takes a moment)..."
 update-initramfs -u -k all
 
-say "Done. Reboot to see it. To revert: sudo $0 --uninstall"
+say "✅ Minecraft boot screen installed!"

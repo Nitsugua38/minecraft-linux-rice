@@ -1,0 +1,325 @@
+#!/usr/bin/env python3
+"""Minecraft Java "world loading" screen (the chunk-status map with a percentage) for the desktop.
+
+Fullscreen on every monitor, fake progress, closes itself.
+  mc-splash                         6 second timer
+  mc-splash --duration 8            custom timer
+  mc-splash --scale 2               make everything twice as big
+  mc-splash --ready-file PATH       after the timer, keep waiting until PATH exists (e.g. written by the hotbar app)
+  mc-splash --windowed              preview in a normal window
+Esc always quits. A hard --timeout (default 30 s) always closes it.
+"""
+import argparse, fcntl, math, os, time
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("PangoCairo", "1.0")
+from gi.repository import Gtk, Gdk, GLib, GdkPixbuf, Pango, PangoCairo
+import cairo
+
+DEFAULT_ASSETS = "/usr/share/minecraft-desktop/splash"
+FONT_FAMILIES = "Monocraft, Minecraft, monospace"
+FONT_EM = 9.0                     # Monocraft is 9 "pixels" per em; 1 pixel = 1 GUI px (change if you use another font)
+
+# ---- grid geometry ----
+CORE_R = 11                       # white core is 23x23 chunks (= 529 = 100%)
+RING_GREEN = 1                    # ring thickness in chunks: green, then blue, then gray
+RING_BLUE = 1
+RING_GRAY = 8
+OUT_R = RING_GREEN + RING_BLUE + RING_GRAY      # 10 chunks of rings around the core
+R = CORE_R + OUT_R                # 21
+N = 2 * R + 1                     # 43
+CORE_N = (2 * CORE_R + 1) ** 2    # 529
+IN_PROGRESS = 4                   # how many chunks show as "being finished" (light gray) at the edge of the white
+
+# ---- timing (fractions of --duration) ----
+BLACK_FRAC = 0.12                 # nothing but the black map at the very start (the "0%" frame)
+
+
+def rgb(h):
+    return ((h >> 16) & 255) / 255.0, ((h >> 8) & 255) / 255.0, (h & 255) / 255.0
+
+
+# ---- chunk-status colours (tune here; measured from the footage) ----
+C_BLACK = rgb(0x000000)           # no status yet / frame around the map
+C_GRAY = rgb(0x999999)            # early generation, the big outer area
+C_BLUE = rgb(0x3B3B8F)            # ring next to the green one
+C_GREEN = rgb(0x2EB82E)           # ring touching the white core
+C_LIGHT = rgb(0xD1D1D1)           # chunk being finished
+C_WHITE = rgb(0xFFFFFF)           # finished chunk
+
+
+class State:
+    """Fake progress model shared by all windows."""
+
+    def __init__(self, duration, ready_file, timeout):
+        self.t0 = time.monotonic()
+        self.duration, self.ready_file = duration, ready_file
+        self.timeout = max(timeout, duration)
+        self.progress = 0.0           # fraction of the core that is finished
+        self.started = False          # False = only the black map (very first moments)
+        self.finishing_at = None
+        self.finish_from = 0.0
+        self.done = False
+        cells = [(dx, dy) for dx in range(-CORE_R, CORE_R + 1) for dy in range(-CORE_R, CORE_R + 1)]
+        # spiral order: square ring by square ring, going round each ring
+        cells.sort(key=lambda c: (max(abs(c[0]), abs(c[1])),
+                                  (math.atan2(c[1], c[0]) + 0.75 * math.pi) % (2 * math.pi)))
+        self.cells = cells
+        self.rank = {c: i for i, c in enumerate(cells)}
+        self._key, self._field = None, None
+
+    @property
+    def n_done(self):
+        return min(CORE_N, int(self.progress * CORE_N + 1e-6))
+
+    @property
+    def n_busy(self):
+        return min(IN_PROGRESS, CORE_N - self.n_done) if self.started else 0
+
+    def field(self):
+        """Chessboard distance from every map cell to the nearest finished/in-progress chunk (cached)."""
+        n = self.n_done + self.n_busy
+        if self._key == n:
+            return self._field
+        INF = 99
+        d = [[INF] * N for _ in range(N)]
+        for (dx, dy) in self.cells[:n]:
+            d[dy + R][dx + R] = 0
+        for y in range(N):                                     # forward pass
+            for x in range(N):
+                v = d[y][x]
+                if y > 0:
+                    r = d[y - 1]
+                    if x > 0 and r[x - 1] + 1 < v: v = r[x - 1] + 1
+                    if r[x] + 1 < v: v = r[x] + 1
+                    if x < N - 1 and r[x + 1] + 1 < v: v = r[x + 1] + 1
+                if x > 0 and d[y][x - 1] + 1 < v: v = d[y][x - 1] + 1
+                d[y][x] = v
+        for y in range(N - 1, -1, -1):                         # backward pass
+            for x in range(N - 1, -1, -1):
+                v = d[y][x]
+                if y < N - 1:
+                    r = d[y + 1]
+                    if x > 0 and r[x - 1] + 1 < v: v = r[x - 1] + 1
+                    if r[x] + 1 < v: v = r[x] + 1
+                    if x < N - 1 and r[x + 1] + 1 < v: v = r[x + 1] + 1
+                if x < N - 1 and d[y][x + 1] + 1 < v: v = d[y][x + 1] + 1
+                d[y][x] = v
+        self._key, self._field = n, d
+        return d
+
+    def update(self, now):
+        """Advance the model; returns window opacity (fade in / fade out)."""
+        t = now - self.t0
+        fade_in = min(1.0, t / 0.3)
+        if self.finishing_at is None:
+            self.started = t >= BLACK_FRAC * self.duration
+            x = max(0.0, min(1.0, (t - BLACK_FRAC * self.duration) / ((1 - BLACK_FRAC) * self.duration)))
+            self.progress = max(self.progress, 0.97 * x * x * (3 - 2 * x))     # slow start, quick middle, slow end
+            ready = (not self.ready_file) or os.path.exists(self.ready_file)
+            if (t >= self.duration and ready) or t >= self.timeout:
+                self.finishing_at, self.finish_from = now, self.progress
+            return fade_in
+        f = now - self.finishing_at
+        self.started = True
+        self.progress = self.finish_from + (1 - self.finish_from) * min(1.0, f / 0.35)
+        if f >= 1.05:
+            self.done = True
+        return 1.0 if f < 0.65 else max(0.0, 1 - (f - 0.65) / 0.4)
+
+
+def cell_color(state, gx, gy, n, dist):
+    if not state.started:
+        return C_BLACK
+    dx, dy = gx - R, gy - R
+    r = state.rank.get((dx, dy))
+    if r is not None:
+        if r < n:
+            return C_WHITE
+        if r < n + state.n_busy:
+            return C_LIGHT
+    d = dist[gy][gx]
+    if d <= RING_GREEN:
+        return C_GREEN
+    if d <= RING_GREEN + RING_BLUE:
+        return C_BLUE
+    if d <= OUT_R:
+        return C_GRAY
+    return C_BLACK
+
+
+def load_dirt(assets):
+    try:
+        pb = GdkPixbuf.Pixbuf.new_from_file(os.path.join(assets, "dirt.png"))
+        return Gdk.cairo_surface_create_from_pixbuf(pb, 1, None)
+    except Exception:
+        return None
+
+
+def draw_percent(cr, s, cx, baseline, gui):
+    """Minecraft-style text: white with a 1 GUI px shadow (0x3F3F3F). `baseline` is the y of the glyph baseline."""
+    layout = PangoCairo.create_layout(cr)
+    fd = Pango.FontDescription(FONT_FAMILIES)
+    fd.set_absolute_size(FONT_EM * gui * Pango.SCALE)
+    layout.set_font_description(fd)
+    layout.set_text(s, -1)
+    tw, _ = layout.get_pixel_size()
+    x = round(cx - tw / 2)
+    y = round(baseline - layout.get_baseline() / Pango.SCALE)
+    sh = max(1, round(gui))
+    cr.move_to(x + sh, y + sh); cr.set_source_rgb(0.247, 0.247, 0.247); PangoCairo.show_layout(cr, layout)
+    cr.move_to(x, y);           cr.set_source_rgb(1, 1, 1);             PangoCairo.show_layout(cr, layout)
+
+
+def draw_scene(cr, w, h, state, dirt, scale=1.0, primary=True):
+    gui = (h / 540.0) * scale                                # 1 "GUI pixel" (1080p -> 2 px, like the reference footage)
+    cell = max(1, int(round(2 * gui)))                       # one chunk; also one dirt texel (16 texels span 32 GUI px)
+    if dirt is not None:
+        cr.save(); cr.scale(cell, cell)
+        pat = cairo.SurfacePattern(dirt); pat.set_extend(cairo.EXTEND_REPEAT); pat.set_filter(cairo.FILTER_NEAREST)
+        cr.set_source(pat); cr.paint(); cr.restore()
+    else:
+        cr.set_source_rgb(0.5, 0.36, 0.26); cr.paint()
+    cr.set_source_rgba(0, 0, 0, 0.75); cr.paint()            # dirt tinted to 25% brightness, like the game
+    if not primary:
+        return
+
+    cx, cy = w // 2, int(h // 2 + 30 * gui)                  # map centre sits below the screen centre
+    total = N * cell
+    ox, oy = cx - total // 2, cy - total // 2
+    cr.set_source_rgb(0, 0, 0)                               # black frame, one chunk wide
+    cr.rectangle(ox - cell, oy - cell, total + 2 * cell, total + 2 * cell); cr.fill()
+    n = state.n_done
+    dist = state.field() if state.started else None
+    last = None
+    for gy in range(N):
+        for gx in range(N):
+            col = cell_color(state, gx, gy, n, dist)
+            if col is C_BLACK:
+                continue
+            if col is not last:
+                cr.set_source_rgb(*col); last = col
+            cr.rectangle(ox + gx * cell, oy + gy * cell, cell, cell); cr.fill()
+    baseline = (oy - cell) - 13 * gui                        # text box is 12 GUI px above the map, glyphs are 7 px tall
+    draw_percent(cr, "%d%%" % int(state.progress * 100), w / 2, baseline, gui)
+
+
+class Splash(Gtk.Window):
+    def __init__(self, state, dirt, monitor, primary, windowed, scale):
+        super().__init__()
+        self.state, self.dirt, self.primary, self.scale = state, dirt, primary, scale
+        self.set_title("Minecraft loading screen")
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_skip_taskbar_hint(True); self.set_skip_pager_hint(True)
+        self.set_keep_above(True)
+        self.set_opacity(0.0)
+        self.area = Gtk.DrawingArea(); self.add(self.area)
+        self.area.connect("draw", lambda wd, cr: draw_scene(
+            cr, wd.get_allocated_width(), wd.get_allocated_height(), self.state, self.dirt, self.scale, self.primary))
+        self.connect("key-press-event", lambda _w, e: Gtk.main_quit() if e.keyval == Gdk.KEY_Escape else None)
+        self.connect("realize", self._hide_cursor)
+        self.monitor_idx = monitor
+        if windowed:
+            self.set_default_size(960, 540)
+        else:
+            # Some window managers (Cinnamon) ignore a fullscreen request made before the window is shown and leave
+            # it at its tiny default size. So: give it the monitor's size and position up front, request fullscreen
+            # again once it is mapped, and check afterwards that it really covers the monitor.
+            self.geo = Gdk.Display.get_default().get_monitor(monitor).get_geometry()
+            self.set_default_size(self.geo.width, self.geo.height)
+            self.move(self.geo.x, self.geo.y)
+            self.connect("map-event", self._on_map)
+
+    def _go_fullscreen(self):
+        g = self.geo
+        self.move(g.x, g.y)
+        self.resize(g.width, g.height)
+        self.fullscreen_on_monitor(self.get_screen(), self.monitor_idx)
+        return False
+
+    def _verify_size(self):
+        g = self.geo
+        if self.get_allocated_width() < g.width - 2 or self.get_allocated_height() < g.height - 2:
+            self.unfullscreen()                               # fullscreen was refused: cover the monitor by hand
+            self.move(g.x, g.y)
+            self.resize(g.width, g.height)
+        return False
+
+    def _on_map(self, *_):
+        GLib.idle_add(self._go_fullscreen)
+        GLib.timeout_add(400, self._verify_size)
+
+    def _hide_cursor(self, *_):
+        d = Gdk.Display.get_default()
+        self.get_window().set_cursor(Gdk.Cursor.new_for_display(d, Gdk.CursorType.BLANK_CURSOR))
+
+
+def render_png(path, progress, assets, scale):
+    """Offscreen render of one frame (handy for comparing against the footage)."""
+    w, h = 1920, 1080
+    st = State(6, None, 30); st.progress, st.started = progress, True
+    surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+    draw_scene(cairo.Context(surf), w, h, st, load_dirt(assets), scale)
+    surf.write_to_png(path)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--duration", type=float, default=6.0, help="seconds until the loader finishes (default 6)")
+    ap.add_argument("--scale", type=float, default=1.0, help="size multiplier (default 1 = same proportions as the footage)")
+    ap.add_argument("--ready-file", help="after --duration, keep waiting until this file exists")
+    ap.add_argument("--timeout", type=float, default=30.0, help="hard limit in seconds (default 30)")
+    ap.add_argument("--windowed", action="store_true", help="normal window instead of fullscreen (preview)")
+    ap.add_argument("--assets", default=os.environ.get("MC_SPLASH_ASSETS", DEFAULT_ASSETS))
+    ap.add_argument("--render-png", metavar="FILE", help="write one frame to a PNG and exit")
+    ap.add_argument("--progress", type=float, default=0.68, help="progress (0-1) for --render-png")
+    a = ap.parse_args()
+
+    if a.render_png:
+        render_png(a.render_png, a.progress, a.assets, a.scale); return
+
+    if not a.windowed:                                       # only one splash at a time
+        d = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+        lock = open(os.path.join(d, "mc-splash.lock"), "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return
+
+    display = Gdk.Display.get_default()
+    state, dirt = State(a.duration, a.ready_file, a.timeout), load_dirt(a.assets)
+    primary_mon = display.get_primary_monitor()
+    wins = []
+    for i in range(display.get_n_monitors()):
+        is_primary = (display.get_monitor(i) == primary_mon) if primary_mon else (i == 0)
+        wins.append(Splash(state, dirt, i, is_primary, a.windowed, a.scale))
+        if a.windowed:
+            break
+    if not any(w.primary for w in wins):
+        wins[0].primary = True
+    for w in wins:
+        w.show_all()
+
+    last = {"raise": 0.0}
+
+    def tick():
+        now = time.monotonic()
+        alpha = state.update(now)
+        for w in wins:
+            w.set_opacity(alpha); w.queue_draw()
+            if not a.windowed and now - last["raise"] > 0.5:         # stay above panels that load late
+                w.present()
+        if now - last["raise"] > 0.5:
+            last["raise"] = now
+        if state.done:
+            Gtk.main_quit(); return False
+        return True
+
+    GLib.timeout_add(33, tick)
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

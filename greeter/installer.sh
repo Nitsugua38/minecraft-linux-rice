@@ -99,7 +99,4 @@ if grep -Eq '^\s*greeter-session' /etc/lightdm/lightdm.conf 2>/dev/null; then
     warn "/etc/lightdm/lightdm.conf sets greeter-session and takes priority over the drop-in. Remove or edit that line."
 fi
 
-say "Done. Reboot (or log out) to see it. LightDM was NOT restarted."
-say "If the login screen ever breaks: Ctrl+Alt+F3, log in, then run:"
-say "    sudo rm ${DROPIN} && sudo systemctl restart lightdm"
-say "To revert properly: sudo $0 --uninstall"
+say "✅ Minecraft login screen installed!"

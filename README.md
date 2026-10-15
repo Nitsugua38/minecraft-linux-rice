@@ -6,7 +6,7 @@
 |---|---|
 | Minecraft Boot logo | plymouth |
 | Minecraft title-screen login | greeter |
-| Minecraft Generating World loading screen | TODO |
+| Minecraft Generating World loading screen | splash |
 | Minecraft hotbar taskbar | TODO |
 | Minecraft inventory app launcher | TODO |
 

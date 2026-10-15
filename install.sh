@@ -2,7 +2,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-MODULES=(plymouth greeter)
+MODULES=(plymouth greeter splash)
 
 ONLY=""
 ARGS=()
