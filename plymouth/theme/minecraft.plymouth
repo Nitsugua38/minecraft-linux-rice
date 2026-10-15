@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Minecraft
+Description=Minecraft-style boot screen: logo and loading bar
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/minecraft
+ScriptFile=/usr/share/plymouth/themes/minecraft/minecraft.script

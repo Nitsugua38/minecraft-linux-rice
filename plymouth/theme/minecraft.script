@@ -1,0 +1,110 @@
+# Minecraft Plymouth theme
+
+# ---------------- config ----------------
+bg.r = 0.94;
+bg.g = 0.20;
+bg.b = 0.24;
+logo.y_ratio = 0.5;
+logo.max_width_ratio = 0.5;
+box.y_ratio = 0.8;
+bar.padding = 4;
+# --------------------------------------------------------
+
+Window.SetBackgroundTopColor(bg.r, bg.g, bg.b);
+Window.SetBackgroundBottomColor(bg.r, bg.g, bg.b);
+
+scr.w = Window.GetWidth();
+scr.h = Window.GetHeight();
+
+# ---- logo ----
+logo.image = Image("logo.png");
+if (logo.image.GetWidth() > scr.w * logo.max_width_ratio) {
+    logo.scale = (scr.w * logo.max_width_ratio) / logo.image.GetWidth();
+    logo.image = logo.image.Scale(Math.Int(logo.image.GetWidth() * logo.scale),
+                                  Math.Int(logo.image.GetHeight() * logo.scale));
+}
+logo.w = logo.image.GetWidth();
+logo.h = logo.image.GetHeight();
+logo.sprite = Sprite(logo.image);
+logo.sprite.SetX(Math.Int(scr.w / 2 - logo.w / 2));
+logo.sprite.SetY(Math.Int(scr.h * logo.y_ratio - logo.h / 2));
+logo.sprite.SetZ(10);
+
+# ---- loading bar: outline box + fill ----
+box.image = Image("progress-box.png");
+box.w = box.image.GetWidth();
+box.h = box.image.GetHeight();
+box.x = Math.Int(scr.w / 2 - box.w / 2);
+box.y = Math.Int(scr.h * box.y_ratio - box.h / 2);
+box.sprite = Sprite(box.image);
+box.sprite.SetX(box.x);
+box.sprite.SetY(box.y);
+box.sprite.SetZ(10);
+
+bar.original = Image("progress-bar.png");
+bar.max_w = box.w - 2 * bar.padding;
+bar.h = box.h - 2 * bar.padding;
+bar.sprite = Sprite();
+bar.sprite.SetX(box.x + bar.padding);
+bar.sprite.SetY(box.y + bar.padding);
+bar.sprite.SetZ(20);
+
+fun set_bar(fraction) {
+    if (fraction > 1) fraction = 1;
+    local.w = Math.Int(bar.max_w * fraction);
+    if (local.w < 1) {
+        bar.sprite.SetOpacity(0);
+    } else {
+        bar.sprite.SetOpacity(1);
+        bar.sprite.SetImage(bar.original.Scale(local.w, bar.h));
+    }
+}
+set_bar(0);
+
+fun progress_callback(duration, progress) {
+    set_bar(progress);
+}
+Plymouth.SetBootProgressFunction(progress_callback);
+
+# ---- disk-encryption password prompt (only shown if your disk is encrypted) ----
+password.prompt = Sprite();
+password.dots = Sprite();
+
+fun password_callback(prompt_text, bullet_count) {
+    local.prompt_img = Image.Text(prompt_text, 1, 1, 1);
+    password.prompt.SetImage(local.prompt_img);
+    password.prompt.SetX(Math.Int(scr.w / 2 - local.prompt_img.GetWidth() / 2));
+    password.prompt.SetY(box.y + box.h + 30);
+    password.prompt.SetZ(30);
+    password.prompt.SetOpacity(1);
+
+    local.dots_text = " ";
+    for (local.i = 0; local.i < bullet_count; local.i++) {
+        local.dots_text = local.dots_text + "*";
+    }
+    local.dots_img = Image.Text(local.dots_text, 1, 1, 1);
+    password.dots.SetImage(local.dots_img);
+    password.dots.SetX(Math.Int(scr.w / 2 - local.dots_img.GetWidth() / 2));
+    password.dots.SetY(box.y + box.h + 60);
+    password.dots.SetZ(30);
+    password.dots.SetOpacity(1);
+}
+Plymouth.SetDisplayPasswordFunction(password_callback);
+
+fun display_normal_callback() {
+    password.prompt.SetOpacity(0);
+    password.dots.SetOpacity(0);
+}
+Plymouth.SetDisplayNormalFunction(display_normal_callback);
+
+# ---- status messages (e.g. fsck) ----
+message.sprite = Sprite();
+
+fun message_callback(text) {
+    local.img = Image.Text(text, 0.8, 0.8, 0.8);
+    message.sprite.SetImage(local.img);
+    message.sprite.SetX(Math.Int(scr.w / 2 - local.img.GetWidth() / 2));
+    message.sprite.SetY(scr.h - 40);
+    message.sprite.SetZ(30);
+}
+Plymouth.SetMessageFunction(message_callback);
