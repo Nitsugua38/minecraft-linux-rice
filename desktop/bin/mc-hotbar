@@ -642,6 +642,15 @@ class Inventory(Gtk.Window):
     SBX, SBY, SBH = 175, 18, 112            # scrollbar track
     KW, KH = 12, 15                         # scrollbar knob
 
+    REPO = "https://github.com/Nitsugua38/minecraft-linux-rice"
+    ESC_DOUBLE_MS = 600
+    MENU_H = 124
+    MENU = [("back", "Back to Game", 0, 0, 200),
+            ("lock", "Lock", 0, 24, 98), ("sleep", "Sleep", 102, 24, 98),
+            ("feedback", "Give Feedback", 0, 48, 98), ("bugs", "Report Bugs", 102, 48, 98),
+            ("options", "Options...", 0, 72, 98), ("logout", "Close to LAN", 102, 72, 98),
+            ("quit", "Save and Quit", 0, 104, 200)]
+
     def __init__(self, hb):
         super().__init__(type=Gtk.WindowType.TOPLEVEL)
         self.hb, self.s = hb, hb.scale
@@ -650,6 +659,8 @@ class Inventory(Gtk.Window):
         self.mouse, self.W, self.H = (0, 0), 1920, 1080
         self.icons, self._seat, self._scroll_acc = {}, None, 0.0
         self.panel, self.knob = self.load_textures()
+        self.menu, self.mhover, self.mpress, self._esc = False, None, None, 0
+        self.btn, self.btn_hi = self.load_buttons() 
         self.set_title("Minecraft inventory")
         self.set_app_paintable(True)
         self.set_decorated(False)
@@ -687,6 +698,15 @@ class Inventory(Gtk.Window):
             knob = to_surface(sc)
         return panel, knob
 
+    
+    def load_buttons(self):
+        out = []
+        for name in ("button.png", "button_highlighted.png"):
+            pb = load_pixbuf(self.hb.assets, name)
+            out.append(to_surface(pb) if pb is not None and pb.get_width() == 200 and pb.get_height() == 20 else None)
+        return out
+
+
     # ---- open / close
     def toggle(self):
         if self.get_visible():
@@ -707,6 +727,7 @@ class Inventory(Gtk.Window):
         self.apps, self.query, self.row = apps, "", 0
         self.hover = self.press = self.drag = None
         self.sb_drag = False
+        self.menu, self.mhover, self.mpress = False, None, None
         self.refilter()
         g = hb.geo
         self.W, self.H = g.width, g.height
@@ -727,6 +748,11 @@ class Inventory(Gtk.Window):
         return False
 
     def close_inventory(self):
+        if self._esc:
+            GLib.source_remove(self._esc)
+            self._esc = 0
+        self.menu = False
+
         if self._seat is not None:
             self._seat.ungrab()
             self._seat = None
@@ -785,12 +811,101 @@ class Inventory(Gtk.Window):
         self.row = max(0, min(self.max_row(), int(round(frac * self.max_row()))))
         self.queue_draw()
 
+
+
+    
+    # ---- game menu (Esc twice)
+    def menu_origin(self):
+        return (self.W - 200 * self.s) // 2, (self.H - self.MENU_H * self.s) // 2 + 10 * self.s
+
+    def menu_at(self, x, y):
+        ox, oy = self.menu_origin()
+        for bid, _label, bx, by, bw in self.MENU:
+            if ox + bx * self.s <= x < ox + (bx + bw) * self.s and oy + by * self.s <= y < oy + (by + 20) * self.s:
+                return bid
+        return None
+
+    def menu_do(self, bid):
+        self.close_inventory()
+        if bid == "feedback":
+            self.open_url(self.REPO + "/issues")
+        elif bid == "bugs":
+            self.open_url(self.REPO + "/issues/new")
+        elif bid == "options":
+            open_first([["cinnamon-settings"], ["gnome-control-center"]])
+        elif bid == "logout":
+            run_quiet(["cinnamon-session-quit", "--logout"])
+        elif bid == "quit":
+            run_quiet(["cinnamon-session-quit", "--power-off"])
+        elif bid == "lock":
+            run_quiet(["cinnamon-screensaver-command", "--lock"])
+        elif bid == "sleep":
+            run_quiet(["systemctl", "suspend"])
+
+    def open_url(self, url):
+        try:
+            Gio.AppInfo.launch_default_for_uri(url, None)
+        except GLib.Error as e:
+            print("mc-hotbar: cannot open %s: %s" % (url, e), file=sys.stderr)
+
+    def esc_pressed(self):
+        if self.menu:
+            self.close_inventory()
+        elif self._esc:
+            GLib.source_remove(self._esc)
+            self._esc = 0
+            self.menu, self.mhover, self.mpress = True, None, None
+            self.hb.tip.hide()
+            self.queue_draw()
+        else:
+            def later():
+                self._esc = 0
+                self.close_inventory()
+                return False
+            self._esc = GLib.timeout_add(self.ESC_DOUBLE_MS, later)
+
+    def paint_menu(self, cr):
+        s = self.s
+        ox, oy = self.menu_origin()
+
+        def text(label, cx, y, size, color):
+            lay = make_layout(cr, label, size)
+            tw, th = lay.get_pixel_size()
+            cr.set_source_rgb(*rgb(0x3F3F3F)); cr.move_to(cx - tw // 2 + s, y + s); PangoCairo.show_layout(cr, lay)
+            cr.set_source_rgb(*rgb(color)); cr.move_to(cx - tw // 2, y); PangoCairo.show_layout(cr, lay)
+        text("Game Menu", self.W // 2, oy - 20 * s, FONT_EM * s, 0xFFFFFF)
+        for bid, label, bx, by, bw in self.MENU:
+            x, y, hov = ox + bx * s, oy + by * s, (bid == self.mhover)
+            tex = (self.btn_hi if hov and self.btn_hi is not None else self.btn)
+            if tex is not None:                                   # a 200 px texture stretched to any width: left half + right half
+                half = bw // 2
+                for src_x, dst_x, w in ((0, 0, half), (200 - (bw - half), half, bw - half)):
+                    cr.save(); cr.rectangle(x + dst_x * s, y, w * s, 20 * s); cr.clip()
+                    paint_sprite(cr, tex, x + (dst_x - src_x) * s, y, s)
+                    cr.restore()
+            else:                                                 # no button.png: plain grey button
+                cr.set_source_rgb(0, 0, 0); cr.rectangle(x, y, bw * s, 20 * s); cr.fill()
+                cr.set_source_rgb(*rgb(0x7A7FAA if hov else 0x6F6F6F)); cr.rectangle(x + s, y + s, (bw - 2) * s, 18 * s); cr.fill()
+            lay = make_layout(cr, label, FONT_EM * s)
+            tw = lay.get_pixel_size()[0]
+            size = FONT_EM * s * min(1.0, (bw - 8) * s / float(tw)) if tw else FONT_EM * s
+            text(label, x + bw * s // 2, y + 5 * s, size, 0xFFFFA0 if hov else 0xFFFFFF)
+
+
+
+
+
+
     # ---- drawing
     def paint(self, cr):
         s, (px, py) = self.s, self.origin()
         cr.set_operator(cairo.OPERATOR_SOURCE); cr.set_source_rgba(0, 0, 0, 0); cr.paint()
         cr.set_operator(cairo.OPERATOR_OVER)
         cr.set_source_rgba(0.06, 0.06, 0.06, 0.75); cr.paint()                       # dimmed background, like in game
+
+        if self.menu:
+            self.paint_menu(cr)
+            return
 
         def box(gx, gy, gw, gh, color, a=1.0):
             cr.set_source_rgba(*rgb(color), a)
@@ -866,10 +981,13 @@ class Inventory(Gtk.Window):
     def on_press(self, _w, ev):
         if ev.type != Gdk.EventType.BUTTON_PRESS:
             return True
+        if self.menu:
+            self.mpress = self.menu_at(ev.x, ev.y) if ev.button == 1 else None
+            return True
         key = self.slot_at(ev.x, ev.y)
         self.mouse = (ev.x, ev.y)
         if key is None:
-            self.close_inventory()                                # click outside the panel
+            self.close_inventory()
         elif ev.button == 1 and key[0] == "scroll":
             self.sb_drag = True
             self.set_row_from_y(ev.y)
@@ -882,6 +1000,12 @@ class Inventory(Gtk.Window):
 
     def on_motion(self, _w, ev):
         self.mouse = (ev.x, ev.y)
+        if self.menu:
+            h = self.menu_at(ev.x, ev.y)
+            if h != self.mhover:
+                self.mhover = h
+                self.queue_draw()
+            return True
         if self.sb_drag:
             self.set_row_from_y(ev.y)
             return True
@@ -911,6 +1035,11 @@ class Inventory(Gtk.Window):
     def on_release(self, _w, ev):
         if ev.button != 1:
             return True
+        if self.menu:
+            bid, self.mpress = self.mpress, None
+            if bid is not None and bid == self.menu_at(ev.x, ev.y):
+                self.menu_do(bid)
+            return True
         self.sb_drag = False
         press, drag = self.press, self.drag
         self.press = self.drag = None
@@ -933,6 +1062,8 @@ class Inventory(Gtk.Window):
         return True
 
     def on_scroll(self, _w, ev):
+        if self.menu:
+            return True
         step = 0
         if ev.direction == Gdk.ScrollDirection.UP:
             step = -1
@@ -957,7 +1088,9 @@ class Inventory(Gtk.Window):
     def on_key(self, _w, ev):
         k = ev.keyval
         if k == Gdk.KEY_Escape:
-            self.close_inventory()
+            self.esc_pressed()
+        elif self.menu:
+            pass
         elif k in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             if self.shown:
                 app = self.shown[0]
