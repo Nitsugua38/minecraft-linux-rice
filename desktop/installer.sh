@@ -62,6 +62,7 @@ done
 mkdir -p "${DATA}"
 rm -f "${DATA}"/world.*
 cp -f "${HERE}/assets/"*.png "${DATA}/"
+cp -f "${HERE}/assets/"click.ogg "${DATA}/"
 chmod -R a+rX "${DATA}"
 
 # 4. font

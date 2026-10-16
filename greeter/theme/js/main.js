@@ -144,6 +144,7 @@
     state.starting = true;
     setMsg("Loading world...", false);
     document.body.classList.add("starting");
+    if (window.mcSound) window.mcSound.fadeOut(800);
     var key = sessionKey();
     setTimeout(function () {
       try { L.start_session(key); }

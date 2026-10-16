@@ -521,6 +521,7 @@ class ChestPop(Gtk.Window):
         if win is None:
             return True
         if ev.button == 1:
+            self.hb.click()
             self.hb.focus_window(win)
             self._do_hide()
         elif ev.button == 2:
@@ -826,6 +827,7 @@ class Inventory(Gtk.Window):
         return None
 
     def menu_do(self, bid):
+        self.hb.click()
         self.close_inventory()
         if bid == "feedback":
             self.open_url(self.REPO + "/issues")
@@ -1143,6 +1145,8 @@ class Hotbar(Gtk.Window):
         self.scale = scale_override or self.cfg["scale"]
         self.bar_surf, self.sel_surf = load_sprites(assets)
         self.hud = load_hud_sprites(assets)
+        self.click_path = next((p for p in (os.path.join(assets, "click." + e) for e in ("ogg", "wav", "mp3", "flac")) if os.path.isfile(p)), None)
+        self._click_t = 0.0
         self.hover, self.hover_key = None, None
         self.apps, self.keys, self.icons = [None] * SLOTS, [set()] * SLOTS, [None] * SLOTS
         self.running = [False] * SLOTS
@@ -1762,6 +1766,15 @@ class Hotbar(Gtk.Window):
             print("mc-hotbar: could not launch %s: %s" % (app.get_id(), e), file=sys.stderr)
 
 
+
+    def click(self):
+        """UI click sound (assets-custom/click.ogg). Silent when there is no such file."""
+        now = time.monotonic()
+        if self.click_path and now - self._click_t > 0.05:
+            self._click_t = now
+            run_quiet(["paplay", self.click_path])
+
+
     def chest_items(self):
         """Open windows that are not covered by a pinned slot: [{'xid', 'icon', 'title'}]."""
         out = []
@@ -1888,6 +1901,7 @@ class Hotbar(Gtk.Window):
             self.cal.hide()
         if key is None:
             return True
+        self.click()
         kind = key[0]
         if kind == "slot":
             i = key[1]

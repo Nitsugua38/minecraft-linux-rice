@@ -70,6 +70,15 @@ cp -r "${HERE}/assets/." "${THEME_DIR}/assets/"
 for f in index.html index.yml css/style.css js/main.js assets/logo.png assets/dirt.png assets/font.ttf; do
     [[ -f "${THEME_DIR}/${f}" ]] || die "Missing ${f} in the installed theme."
 done
+python3 - "${THEME_DIR}/assets/music" "${THEME_DIR}/js/sound-config.js" <<'PY'
+import json, os, sys
+d, out = sys.argv[1:3]
+exts = (".mp3", ".ogg", ".flac", ".wav", ".m4a")
+tracks = sorted(f for f in os.listdir(d) if f.lower().endswith(exts)) if os.path.isdir(d) else []
+with open(out, "w") as f:
+    f.write("window.MC_SOUND = %s;\n" % json.dumps({"tracks": tracks}))
+print("[greeter] music tracks: %d" % len(tracks))
+PY
 chmod -R a+rX "${THEME_DIR}"     # the 'lightdm' user must be able to read it
 
 
