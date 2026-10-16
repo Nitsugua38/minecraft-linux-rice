@@ -6,7 +6,7 @@ DATA="/usr/share/minecraft-desktop/splash"
 FONT_DIR="/usr/local/share/fonts/minecraft-desktop"
 AUTOSTART="/etc/xdg/autostart/mc-splash.desktop"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DURATION="${MC_SPLASH_DURATION:-6}"
+DURATION="${MC_SPLASH_DURATION:-5}"
 
 if [[ $EUID -ne 0 ]]; then
     exec sudo MC_SPLASH_DURATION="$DURATION" bash "${BASH_SOURCE[0]}" "$@"
@@ -60,7 +60,7 @@ cat > "${AUTOSTART}" <<EOD
 Type=Application
 Name=Minecraft loading screen
 Comment=Fake world-generation screen shown while the desktop loads
-Exec=${BIN} --duration ${DURATION} --scale 1.5 --ready-file auto
+Exec=${BIN} --duration ${DURATION} --scale 1.5 --ready-file auto --timeout 5
 Terminal=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true

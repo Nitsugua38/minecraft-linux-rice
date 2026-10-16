@@ -2,7 +2,7 @@
 """Minecraft hotbar + HUD: your taskbar, launcher and system tray, drawn like the in-game HUD.
 """
 
-import argparse, glob, json, os, re, shutil, signal, subprocess, sys, time
+import argparse, glob, json, os, re, shutil, signal, subprocess, sys, time, threading
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
@@ -539,6 +539,468 @@ class ChestPop(Gtk.Window):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ----------------------------------------------------------------- Super key, pressed and released on its own
+class SuperTap:
+    """Calls on_tap() on the GLib main loop when Super is pressed and released ALONE: quickly, with no other key
+    or mouse button in between. It only watches (X RECORD extension) and grabs nothing, so Super+E and every other
+    shortcut keep working. Only whether the key is Super is looked at; nothing is stored or logged."""
+    MAX_HOLD = 0.4                                               # seconds; longer = you are holding it, or key repeat
+
+    def __init__(self, on_tap):
+        self.on_tap = on_tap
+        self.down_since, self.dirty = None, False
+
+    def start(self):
+        try:
+            from Xlib import X, display
+            from Xlib.ext import record
+            from Xlib.protocol import rq
+            self._X, self._rq, self._record = X, rq, record
+            self._ctl, self._rec = display.Display(), display.Display()
+            if not self._rec.has_extension("RECORD"):
+                raise RuntimeError("the X server has no RECORD extension")
+            self._supers = {self._ctl.keysym_to_keycode(0xFFEB), self._ctl.keysym_to_keycode(0xFFEC)} - {0}   # Super_L, Super_R
+            self._ctx = self._rec.record_create_context(0, [record.AllClients], [{
+                "core_requests": (0, 0), "core_replies": (0, 0), "ext_requests": (0, 0, 0, 0), "ext_replies": (0, 0, 0, 0),
+                "delivered_events": (0, 0), "device_events": (X.KeyPress, X.ButtonPress), "errors": (0, 0),
+                "client_started": False, "client_died": False}])
+        except Exception as e:
+            print("mc-hotbar: the Super key will not open the inventory (%s). Install python3-xlib, or bind "
+                  "'mc-hotbar --inventory' to a shortcut." % e, file=sys.stderr)
+            return False
+        threading.Thread(target=self._run, daemon=True).start()
+        return True
+
+    def _run(self):
+        try:
+            self._rec.record_enable_context(self._ctx, self._handle)
+        except Exception as e:
+            print("mc-hotbar: the Super key watcher stopped (%s)" % e, file=sys.stderr)
+
+    def _handle(self, reply):
+        X, rq, record = self._X, self._rq, self._record
+        if reply.category != record.FromServer or reply.client_swapped or not len(reply.data) or reply.data[0] < 2:
+            return
+        data = reply.data
+        while len(data):
+            ev, data = rq.EventField(None).parse_binary_value(data, self._rec.display, None, None)
+            if ev.type == X.KeyPress:
+                if ev.detail in self._supers:
+                    if self.down_since is None:
+                        self.down_since, self.dirty = time.monotonic(), False
+                else:
+                    self.dirty = True                            # Super+E, Super+Tab...: not a tap
+            elif ev.type == X.ButtonPress:
+                self.dirty = True                                # Super+click: not a tap
+            elif ev.type == X.KeyRelease and ev.detail in self._supers:
+                tap = self.down_since is not None and not self.dirty and time.monotonic() - self.down_since <= self.MAX_HOLD
+                self.down_since = None
+                if tap:
+                    GLib.idle_add(self._fire)
+
+    def _fire(self):
+        self.on_tap()
+        return False
+
+
+# ----------------------------------------------------------------- the inventory (all apps)
+def app_icon_surface(app, size):
+    theme, pb = Gtk.IconTheme.get_default(), None
+    try:
+        icon = app.get_icon()
+        if icon is not None:
+            info = theme.lookup_by_gicon(icon, size, Gtk.IconLookupFlags.FORCE_SIZE)
+            pb = info.load_icon() if info is not None else None
+        if pb is None:
+            pb = theme.load_icon("application-x-executable", size, Gtk.IconLookupFlags.FORCE_SIZE)
+    except GLib.Error:
+        pb = None
+    return Gdk.cairo_surface_create_from_pixbuf(pb, 1, None) if pb is not None else None
+
+
+class Inventory(Gtk.Window):
+    """Full-screen overlay with the creative-inventory panel: every installed app in a 9 x 5 grid (wheel / scrollbar,
+    type to search), your hotbar in the bottom row. Click an app to launch it, drag it onto a hotbar slot to pin it,
+    drag a pinned app out of the bar to unpin it, right click a pinned app to unpin it. Esc, Super or a click outside closes."""
+    COLS, ROWS = 9, 5
+    PW, PH = 195, 136                       # panel size in GUI px (tab_items.png)
+    GX, GY = 9, 18                          # top-left of the first app item (16x16)
+    HX, HY = 9, 112                         # top-left of the first hotbar item
+    SBX, SBY, SBH = 175, 18, 112            # scrollbar track
+    KW, KH = 12, 15                         # scrollbar knob
+
+    def __init__(self, hb):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        self.hb, self.s = hb, hb.scale
+        self.apps, self.shown, self.query, self.row = [], [], "", 0
+        self.hover, self.press, self.drag, self.sb_drag = None, None, None, False
+        self.mouse, self.W, self.H = (0, 0), 1920, 1080
+        self.icons, self._seat, self._scroll_acc = {}, None, 0.0
+        self.panel, self.knob = self.load_textures()
+        self.set_title("Minecraft inventory")
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.set_skip_taskbar_hint(True); self.set_skip_pager_hint(True)
+        self.set_type_hint(Gdk.WindowTypeHint.DOCK)               # not managed like an app: no alt-tab, no focus tracking
+        self.set_keep_above(True)
+        self.stick()
+        scr = self.get_screen()
+        vis = scr.get_rgba_visual()
+        if vis is not None and scr.is_composited():
+            self.set_visual(vis)
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK | Gdk.EventMask.POINTER_MOTION_MASK |
+                        Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK | Gdk.EventMask.KEY_PRESS_MASK)
+        self.connect("draw", lambda _w, cr: self.paint(cr))
+        self.connect("button-press-event", self.on_press)
+        self.connect("button-release-event", self.on_release)
+        self.connect("motion-notify-event", self.on_motion)
+        self.connect("scroll-event", self.on_scroll)
+        self.connect("key-press-event", self.on_key)
+
+    # ---- textures: inventory.png = creative_inventory/tab_items.png from your jar, scroller.png optional
+    def load_textures(self):
+        assets = self.hb.assets
+        panel = knob = None
+        pb = load_pixbuf(assets, "inventory.png")
+        if pb is not None and pb.get_width() >= self.PW and pb.get_height() >= self.PH:
+            panel = to_surface(pb.new_subpixbuf(0, 0, self.PW, self.PH))
+            if pb.get_width() >= 232 + self.KW and pb.get_height() >= self.KH:
+                k = pb.new_subpixbuf(232, 0, self.KW, self.KH)
+                if k.get_has_alpha() and any(k.get_pixels()[3::4]):
+                    knob = to_surface(k)
+        sc = load_pixbuf(assets, "scroller.png")
+        if sc is not None:
+            knob = to_surface(sc)
+        return panel, knob
+
+    # ---- open / close
+    def toggle(self):
+        if self.get_visible():
+            self.close_inventory()
+        else:
+            self.open_inventory()
+
+    def open_inventory(self):
+        hb = self.hb
+        self.s = hb.scale
+        seen, apps = set(), []
+        for a in Gio.AppInfo.get_all():
+            aid = a.get_id()
+            if aid and aid not in seen and a.should_show():
+                seen.add(aid)
+                apps.append(a)
+        apps.sort(key=lambda a: (a.get_display_name() or "").casefold())
+        self.apps, self.query, self.row = apps, "", 0
+        self.hover = self.press = self.drag = None
+        self.sb_drag = False
+        self.refilter()
+        g = hb.geo
+        self.W, self.H = g.width, g.height
+        self.set_size_request(self.W, self.H)
+        self.resize(self.W, self.H)
+        self.move(g.x, g.y)
+        self.show_all()
+        self.get_window().raise_()
+        GLib.timeout_add(60, self._grab)                         # take keyboard and mouse so Esc / typing always reach us
+        self.queue_draw()
+
+    def _grab(self):
+        gw = self.get_window()
+        if gw is None or not self.get_visible():
+            return False
+        self._seat = Gdk.Display.get_default().get_default_seat()
+        self._seat.grab(gw, Gdk.SeatCapabilities.ALL, True, None, None, None, None)
+        return False
+
+    def close_inventory(self):
+        if self._seat is not None:
+            self._seat.ungrab()
+            self._seat = None
+        self.hb.tip.hide()
+        self.hide()
+
+    # ---- list / search / scroll
+    def refilter(self):
+        q = self.query.strip().lower()
+        out = []
+        for a in self.apps:
+            if q:
+                try:
+                    words = a.get_keywords() if isinstance(a, Gio.DesktopAppInfo) else []
+                except Exception:
+                    words = []
+                hay = " ".join([a.get_display_name() or "", a.get_generic_name() or "", a.get_id() or ""] + list(words or [])).lower()
+                if q not in hay:
+                    continue
+            out.append(a)
+        self.shown = out
+        self.row = max(0, min(self.row, self.max_row()))
+
+    def max_row(self):
+        return max(0, -(-len(self.shown) // self.COLS) - self.ROWS)
+
+    def icon(self, app):
+        aid = app.get_id()
+        if aid not in self.icons:
+            self.icons[aid] = app_icon_surface(app, 16 * self.s)
+        return self.icons[aid]
+
+    # ---- geometry
+    def origin(self):
+        return (self.W - self.PW * self.s) // 2, (self.H - self.PH * self.s) // 2
+
+    def slot_at(self, x, y):
+        px, py = self.origin()
+        gx, gy = (x - px) / float(self.s), (y - py) / float(self.s)
+        if not (0 <= gx < self.PW and 0 <= gy < self.PH):
+            return None
+        if self.SBX <= gx < self.SBX + self.KW and self.SBY <= gy < self.SBY + self.SBH:
+            return ("scroll", None)
+        col, row = int((gx - (self.GX - 1)) // 18), int((gy - (self.GY - 1)) // 18)
+        if 0 <= col < self.COLS and 0 <= row < self.ROWS:
+            i = (self.row + row) * self.COLS + col
+            return ("grid", i) if i < len(self.shown) else ("empty", None)
+        col, row = int((gx - (self.HX - 1)) // 18), int((gy - (self.HY - 1)) // 18)
+        if 0 <= col < self.COLS and row == 0:
+            return ("bar", col)
+        return ("panel", None)
+
+    def set_row_from_y(self, y):
+        px, py = self.origin()
+        frac = ((y - py) / float(self.s) - self.SBY - self.KH / 2.0) / float(self.SBH - self.KH)
+        self.row = max(0, min(self.max_row(), int(round(frac * self.max_row()))))
+        self.queue_draw()
+
+    # ---- drawing
+    def paint(self, cr):
+        s, (px, py) = self.s, self.origin()
+        cr.set_operator(cairo.OPERATOR_SOURCE); cr.set_source_rgba(0, 0, 0, 0); cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+        cr.set_source_rgba(0.06, 0.06, 0.06, 0.75); cr.paint()                       # dimmed background, like in game
+
+        def box(gx, gy, gw, gh, color, a=1.0):
+            cr.set_source_rgba(*rgb(color), a)
+            cr.rectangle(px + gx * s, py + gy * s, gw * s, gh * s)
+            cr.fill()
+        if self.panel is not None:
+            paint_sprite(cr, self.panel, px, py, s)
+        else:                                                                         # no inventory.png: plain grey panel
+            box(0, 0, self.PW, self.PH, 0x000000); box(1, 1, self.PW - 2, self.PH - 2, 0xC6C6C6)
+            for r in range(self.ROWS):
+                for c in range(self.COLS):
+                    x, y = self.GX + 18 * c - 1, self.GY + 18 * r - 1
+                    box(x, y, 18, 18, 0x373737); box(x + 1, y + 1, 17, 17, 0xFFFFFF); box(x + 1, y + 1, 16, 16, 0x8B8B8B)
+            for c in range(self.COLS):
+                x, y = self.HX + 18 * c - 1, self.HY - 1
+                box(x, y, 18, 18, 0x373737); box(x + 1, y + 1, 17, 17, 0xFFFFFF); box(x + 1, y + 1, 16, 16, 0x8B8B8B)
+            box(self.SBX, self.SBY, self.KW, self.SBH, 0x8B8B8B)
+        title = ("Search: " + self.query + "_") if self.query else "Applications"
+        layout = make_layout(cr, title, FONT_EM * s)
+        cr.set_source_rgb(0.25, 0.25, 0.25); cr.move_to(px + 8 * s, py + 6 * s); PangoCairo.show_layout(cr, layout)
+
+        def item(surf, gx, gy):
+            if surf is None:
+                return
+            cr.save()
+            cr.translate(px + gx * s, py + gy * s)
+            cr.scale(16 * s / surf.get_width(), 16 * s / surf.get_height())
+            cr.set_source_surface(surf, 0, 0)
+            cr.paint()
+            cr.restore()
+        for n in range(self.ROWS * self.COLS):                                         # the app grid
+            i = self.row * self.COLS + n
+            if i >= len(self.shown):
+                break
+            item(self.icon(self.shown[i]), self.GX + 18 * (n % self.COLS), self.GY + 18 * (n // self.COLS))
+        for c in range(self.COLS):                                                     # your hotbar
+            if c == CHEST:
+                item(self.hb.hud.get("chest"), self.HX + 18 * c, self.HY)
+            elif self.hb.apps[c] is not None:
+                item(self.icon(self.hb.apps[c]), self.HX + 18 * c, self.HY)
+        if self.hover is not None and self.hover[0] in ("grid", "bar") and not self.drag:
+            if self.hover[0] == "grid":
+                n = self.hover[1] - self.row * self.COLS
+                box(self.GX + 18 * (n % self.COLS), self.GY + 18 * (n // self.COLS), 16, 16, 0xFFFFFF, 0.5)
+            else:
+                box(self.HX + 18 * self.hover[1], self.HY, 16, 16, 0xFFFFFF, 0.5)
+        mr = self.max_row()                                                            # scrollbar knob
+        ky = self.SBY + (int((self.SBH - self.KH) * self.row / float(mr)) if mr else 0)
+        if self.knob is not None:
+            paint_sprite(cr, self.knob, px + self.SBX * s, py + ky * s, s)
+        elif self.panel is None:
+            box(self.SBX, ky, self.KW, self.KH, 0xC6C6C6 if mr else 0x555555)
+        if self.drag is not None:                                                      # the app you are dragging
+            surf = self.icon(self.drag["app"])
+            if surf is not None:
+                cr.save()
+                cr.translate(self.mouse[0] - 8 * s, self.mouse[1] - 8 * s)
+                cr.scale(16 * s / surf.get_width(), 16 * s / surf.get_height())
+                cr.set_source_surface(surf, 0, 0)
+                cr.paint()
+                cr.restore()
+
+    # ---- input
+    def app_of(self, key):
+        if key is None:
+            return None
+        if key[0] == "grid":
+            return self.shown[key[1]]
+        if key[0] == "bar" and key[1] < CHEST:
+            return self.hb.apps[key[1]]
+        return None
+
+    def on_press(self, _w, ev):
+        if ev.type != Gdk.EventType.BUTTON_PRESS:
+            return True
+        key = self.slot_at(ev.x, ev.y)
+        self.mouse = (ev.x, ev.y)
+        if key is None:
+            self.close_inventory()                                # click outside the panel
+        elif ev.button == 1 and key[0] == "scroll":
+            self.sb_drag = True
+            self.set_row_from_y(ev.y)
+        elif ev.button == 1 and self.app_of(key) is not None:
+            self.press = {"key": key, "app": self.app_of(key), "x": ev.x, "y": ev.y}
+        elif ev.button == 3 and key[0] == "bar" and key[1] < CHEST and self.hb.apps[key[1]] is not None:
+            self.hb.unpin(key[1])
+            self.queue_draw()
+        return True
+
+    def on_motion(self, _w, ev):
+        self.mouse = (ev.x, ev.y)
+        if self.sb_drag:
+            self.set_row_from_y(ev.y)
+            return True
+        if self.press is not None and self.drag is None and abs(ev.x - self.press["x"]) + abs(ev.y - self.press["y"]) > 6 * self.s // 2:
+            self.drag = self.press
+            self.hb.tip.hide()
+        key = self.slot_at(ev.x, ev.y)
+        if key != self.hover or self.drag is not None:
+            self.hover = key
+            app = self.app_of(key)
+            if app is not None and self.drag is None:
+                px, py = self.origin()
+                g = self.hb.geo
+                if key[0] == "grid":
+                    n = key[1] - self.row * self.COLS
+                    gx, gy = self.GX + 18 * (n % self.COLS), self.GY + 18 * (n // self.COLS)
+                else:
+                    gx, gy = self.HX + 18 * key[1], self.HY
+                self.hb.tip.show_for(app.get_display_name() or "", self.s, g.x + px + (gx + 8) * self.s, g.y + py + gy * self.s, g)
+            else:
+                self.hb.tip.hide()
+            self.queue_draw()
+        elif self.drag is not None:
+            self.queue_draw()
+        return True
+
+    def on_release(self, _w, ev):
+        if ev.button != 1:
+            return True
+        self.sb_drag = False
+        press, drag = self.press, self.drag
+        self.press = self.drag = None
+        if press is None:
+            return True
+        if drag is not None:                                      # dropped somewhere
+            target = self.slot_at(ev.x, ev.y)
+            if target is not None and target[0] == "bar" and target[1] < CHEST:
+                self.hb.pin(target[1], drag["app"].get_id())
+            elif drag["key"][0] == "bar" and (target is None or target[0] != "bar"):
+                self.hb.unpin(drag["key"][1])                     # dragged out of the bar = unpinned
+            self.queue_draw()
+            return True
+        key = press["key"]                                        # plain click
+        self.close_inventory()
+        if key[0] == "bar":
+            self.hb.activate_slot(key[1])
+        else:
+            self.hb.launch(press["app"])
+        return True
+
+    def on_scroll(self, _w, ev):
+        step = 0
+        if ev.direction == Gdk.ScrollDirection.UP:
+            step = -1
+        elif ev.direction == Gdk.ScrollDirection.DOWN:
+            step = 1
+        elif ev.direction == Gdk.ScrollDirection.SMOOTH:
+            ok, _dx, dy = ev.get_scroll_deltas()
+            if ok:
+                self._scroll_acc += dy
+                if abs(self._scroll_acc) >= 1.0:
+                    step = 1 if self._scroll_acc > 0 else -1
+                    self._scroll_acc = 0.0
+        if step:
+            self.row = max(0, min(self.max_row(), self.row + step))
+            m = getattr(self, "mouse", None)
+            if m:                                                 # re-pick the slot now under the cursor
+                self.hover = None
+                self.on_motion(None, type("E", (), {"x": m[0], "y": m[1]})())
+            self.queue_draw()
+        return True
+
+    def on_key(self, _w, ev):
+        k = ev.keyval
+        if k == Gdk.KEY_Escape:
+            self.close_inventory()
+        elif k in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            if self.shown:
+                app = self.shown[0]
+                self.close_inventory()
+                self.hb.launch(app)
+        elif k == Gdk.KEY_BackSpace:
+            self.query = self.query[:-1]
+            self.refilter(); self.queue_draw()
+        elif k in (Gdk.KEY_Down, Gdk.KEY_Page_Down, Gdk.KEY_Up, Gdk.KEY_Page_Up, Gdk.KEY_Home, Gdk.KEY_End):
+            if k == Gdk.KEY_Down: self.row += 1
+            elif k == Gdk.KEY_Up: self.row -= 1
+            elif k == Gdk.KEY_Page_Down: self.row += self.ROWS
+            elif k == Gdk.KEY_Page_Up: self.row -= self.ROWS
+            elif k == Gdk.KEY_Home: self.row = 0
+            else: self.row = self.max_row()
+            self.row = max(0, min(self.max_row(), self.row))
+            self.queue_draw()
+        elif ev.string and ev.string.isprintable() and not (ev.state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK)):
+            self.query += ev.string
+            self.row = 0
+            self.refilter(); self.queue_draw()
+        return True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ----------------------------------------------------------------- the hotbar
 class Hotbar(Gtk.Window):
     def __init__(self, config_path, assets, scale_override=None, no_struts=False, demo=False):
@@ -560,6 +1022,8 @@ class Hotbar(Gtk.Window):
         self.tip = Tip()
         self.cal = CalendarPop()
         self.chest = ChestPop(self)
+        self.inv = Inventory(self)
+        self.super_tap = SuperTap(self.inv.toggle)
         self._reload_id = None
 
         # system state
@@ -1215,6 +1679,7 @@ class Hotbar(Gtk.Window):
             top.unminimize(ts)
         top.activate(ts)
 
+
     def unpin(self, i):
         self.cfg["slots"][i] = None
         try:
@@ -1222,6 +1687,22 @@ class Hotbar(Gtk.Window):
         except OSError as e:
             print("mc-hotbar: could not save config: %s" % e, file=sys.stderr)
         self.reload_apps()
+
+
+    def pin(self, i, desktop_id):
+        """Put an app in hotbar slot i (an app already pinned elsewhere is moved / swapped)."""
+        if not 0 <= i < CHEST or not desktop_id:
+            return
+        slots = self.cfg["slots"]
+        if desktop_id in slots:
+            slots[slots.index(desktop_id)] = slots[i]
+        slots[i] = desktop_id
+        try:
+            save_config(self.config_path, self.cfg)
+        except OSError as e:
+            print("mc-hotbar: could not save config: %s" % e, file=sys.stderr)
+        self.reload_apps()
+
 
     # ---- tooltips
     def tip_text(self, key):
@@ -1457,6 +1938,7 @@ def main():
     ap.add_argument("--scale", type=int, help="GUI scale, overrides the config file")
     ap.add_argument("--no-struts", action="store_true", help="do not reserve screen space (windows may cover the hotbar)")
     ap.add_argument("--demo", action="store_true", help="show made-up battery / wifi / volume / updates values")
+    ap.add_argument("--inventory", action="store_true", help="open / close the inventory of a running hotbar")
     ap.add_argument("--render-png", metavar="FILE", help="write one frame to FILE and exit")
     ap.add_argument("--size", default="1920x1080", help="with --render-png: screen width x height")
     ap.add_argument("--strip", action="store_true", help="with --render-png: draw the dark strip")
@@ -1467,6 +1949,9 @@ def main():
         return
     if a.quit:
         send_to_running("quit")
+        return
+    if a.inventory:
+        send_to_running("inventory")
         return
     if a.slot:
         if send_to_running("slot", GLib.Variant.new_int32(a.slot)):
@@ -1486,11 +1971,16 @@ def main():
             app.add_window(state["bar"])
             state["bar"].show_all()
             state["bar"].place()
+            if not a.demo:
+                state["bar"].super_tap.start()
 
     app.connect("activate", on_activate)
     act = Gio.SimpleAction.new("slot", GLib.VariantType.new("i"))
     act.connect("activate", lambda _a, p: state["bar"] and state["bar"].activate_slot(p.get_int32() - 1))
     app.add_action(act)
+    inv = Gio.SimpleAction.new("inventory", None)
+    inv.connect("activate", lambda *_: state["bar"] and state["bar"].inv.toggle())
+    app.add_action(inv)
     q = Gio.SimpleAction.new("quit", None)
     q.connect("activate", lambda *_: app.quit())
     app.add_action(q)

@@ -44,7 +44,7 @@ fi
 
 # 1. dependencies (only installs what is missing)
 missing=()
-for pkg in python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-wnck-3.0 gir1.2-pango-1.0 gir1.2-gdkpixbuf-2.0 x11-utils pulseaudio-utils; do
+for pkg in python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-wnck-3.0 gir1.2-pango-1.0 gir1.2-gdkpixbuf-2.0 x11-utils pulseaudio-utils python3-xlib; do
     dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
 done
 if ((${#missing[@]})); then
