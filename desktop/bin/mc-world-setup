@@ -13,6 +13,7 @@ ASSETS = os.environ.get("MC_DESKTOP_ASSETS", "/usr/share/minecraft-desktop/deskt
 
 BG = "org.cinnamon.desktop.background"
 KB = "org.cinnamon.desktop.keybindings"
+NOTIF = "org.cinnamon.desktop.notifications"
 KB_ONE = "org.cinnamon.desktop.keybindings.custom-keybinding"
 KB_PATH = "/org/cinnamon/desktop/keybindings/custom-keybindings/%s/"
 IDS = ["mc-hotbar-%d" % i for i in range(1, 10)]
@@ -23,6 +24,7 @@ TRACKED = [
     ("org.nemo.desktop", "show-desktop-icons"),
     (BG, "picture-uri"), (BG, "picture-options"), (BG + ".slideshow", "slideshow-enabled"),
     ("org.cinnamon", "panels-autohide"),
+    (NOTIF, "display-notifications"),
     ("org.cinnamon", "panels-enabled"),
     (KB, "custom-list"),
 ]
@@ -110,6 +112,10 @@ def apply():
 
     put("org.cinnamon", "panels-enabled", "[]")
     print("panel removed (bring it back with: mc-world-setup --restore)")
+
+    if get(NOTIF, "display-notifications") is not None:
+        put(NOTIF, "display-notifications", "false")
+        print("Cinnamon notification popups off (mc-hotbar shows them as toasts)")
 
     ids = parse_list(get(KB, "custom-list"))
     for i, kid in enumerate(IDS, start=1):

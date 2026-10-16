@@ -38,7 +38,7 @@ HUD_K = 0.9                        # hearts / armor / hunger are drawn at this f
 CLOCK_K = 0.85                     # clock text size as a fraction of the normal text size
 DEFAULT_SCALE = 3                  # GUI scale (1080p game default would be 4; 3 keeps it a bit smaller)
 DEFAULT_STRIP = 0.30               # opacity of the dark strip behind the HUD while a program is open
-DEFAULT_SHOW = {"battery": "auto", "wifi": "auto", "volume": True, "clock": True, "updates": True}
+DEFAULT_SHOW = {"battery": "auto", "wifi": "auto", "volume": True, "clock": True, "updates": True, "toasts": True}
 
 # First installed app of each group becomes a default slot.
 DEFAULT_CANDIDATES = [
@@ -1125,6 +1125,252 @@ class Inventory(Gtk.Window):
 
 
 
+# ----------------------------------------------------------------- advancement-style notification toasts
+def notif_icon_surface(app_icon, hints, size):
+    """Icon of a desktop notification: its image-data hint, an icon name / file path, or the app's .desktop icon."""
+    pb = None
+    try:
+        data = hints.get("image-data") or hints.get("image_data") or hints.get("icon_data")
+        if data is not None:
+            w, h, stride, alpha, _bits, _ch, raw = data[:7]
+            pb = GdkPixbuf.Pixbuf.new_from_bytes(GLib.Bytes.new(bytes(raw)), GdkPixbuf.Colorspace.RGB, bool(alpha), 8, w, h, stride)
+        path = hints.get("image-path") or hints.get("image_path") or app_icon
+        if pb is None and path:
+            if path.startswith("file://"):
+                path = GLib.filename_from_uri(path)[0]
+            if os.path.isabs(path):
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_size(path, size, size)
+            else:
+                pb = Gtk.IconTheme.get_default().load_icon(path, size, Gtk.IconLookupFlags.FORCE_SIZE)
+        if pb is None and hints.get("desktop-entry"):
+            app = Gio.DesktopAppInfo.new(str(hints["desktop-entry"]) + ".desktop")
+            if app is not None:
+                return app_icon_surface(app, size)
+    except (GLib.Error, TypeError, ValueError, IndexError):
+        pb = None
+    if pb is None:
+        try:
+            pb = Gtk.IconTheme.get_default().load_icon("dialog-information", size, Gtk.IconLookupFlags.FORCE_SIZE)
+        except GLib.Error:
+            return None
+    return Gdk.cairo_surface_create_from_pixbuf(pb, 1, None)
+
+
+class Toasts(Gtk.Window):
+    """Minecraft advancement toasts in the top right corner, one per desktop notification. It listens to the session
+    bus as a passive monitor (Notify calls are only copied to us, nothing is intercepted) and draws the toast itself;
+    click-through, never takes focus. Up to 5 are shown at once, the others wait their turn."""
+    TW, TH, MAX = 160, 32, 5
+    SLIDE, SHOW = 0.6, 5.0                                        # seconds sliding in / out, seconds fully shown
+    TEXT_K = 0.6
+    RULE = "type='method_call',interface='org.freedesktop.Notifications',member='Notify'"
+
+    def __init__(self, hb):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        self.hb, self.s = hb, hb.scale
+        self.items, self.queue, self._timer, self._last = [], [], 0, ("", 0.0)
+        self.tex = self.load_texture()
+        self.sound = next((p for p in (os.path.join(hb.assets, "toast." + e) for e in ("ogg", "wav", "mp3", "flac")) if os.path.isfile(p)), None)
+        self.set_title("Minecraft toasts")
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.set_accept_focus(False)
+        self.set_focus_on_map(False)
+        self.set_skip_taskbar_hint(True); self.set_skip_pager_hint(True)
+        self.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
+        self.set_keep_above(True)
+        self.stick()
+        scr = self.get_screen()
+        vis = scr.get_rgba_visual()
+        if vis is not None and scr.is_composited():
+            self.set_visual(vis)
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        self.connect("draw", lambda _w, cr: self.paint(cr))
+        self.connect("button-press-event", self.on_press)
+        self.conn = None
+
+    def load_texture(self):
+        pb = load_pixbuf(self.hb.assets, "toast.png")
+        if pb is not None and pb.get_width() >= self.TW and pb.get_height() >= self.TH:
+            return to_surface(pb.new_subpixbuf(0, 0, self.TW, self.TH))
+        pb = load_pixbuf(self.hb.assets, "toasts.png")
+        if pb is not None and pb.get_width() >= self.TW and pb.get_height() >= self.TH:
+            return to_surface(pb.new_subpixbuf(0, 0, self.TW, self.TH))
+        return None
+
+    # ---- listening: become a passive monitor of Notify calls
+    def start(self):
+        try:
+            addr = Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION, None)
+            self.conn = Gio.DBusConnection.new_for_address_sync(
+                addr, Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
+            self.conn.add_filter(self._filter)
+            self.conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus.Monitoring", "BecomeMonitor",
+                                GLib.Variant("(asu)", ([self.RULE], 0)), None, Gio.DBusCallFlags.NONE, -1, None)
+        except GLib.Error as e:
+            print("mc-hotbar: toasts disabled, cannot monitor notifications (%s)" % e.message, file=sys.stderr)
+            self.conn = None
+
+    def _filter(self, _conn, message, incoming, *_):              # runs on a GDBus thread: hand over to the main loop
+        if not incoming or message.get_message_type() != Gio.DBusMessageType.METHOD_CALL:
+            return message                                        # our own calls (BecomeMonitor) and their replies must pass
+        try:
+            if message.get_member() == "Notify":
+                GLib.idle_add(self.on_notify, message.get_body())
+        except Exception:
+            pass
+        return None                                               # drop the copy: GDBus must not answer a monitored call
+
+    def on_notify(self, body):
+        try:
+            app, _rid, icon, summary, text, _actions, hints, _timeout = body.unpack()
+        except (ValueError, TypeError):
+            return False
+        hints = hints if isinstance(hints, dict) else {}
+        summary, text = (summary or "").strip(), (text or "").strip()
+        if not summary and not text:
+            return False
+        if hints.get("transient") and hints.get("x-canonical-private-synchronous"):          # volume / brightness style OSDs
+            return False
+        key, now = "%s|%s|%s" % (app, summary, text), time.monotonic()
+        if key == self._last[0] and now - self._last[1] < 2.0:                                # same notification repeated
+            return False
+        self._last = (key, now)
+        text = re.sub(r"<[^>]+>", "", text.replace("<br>", " ")).replace("\n", " ")           # notification markup
+        desktop = str(hints.get("desktop-entry") or "")
+        desktop = desktop[:-8] if desktop.endswith(".desktop") else desktop
+        self.queue.append({"head": summary or app or "Notification", "body": text or (app or ""), "icon": notif_icon_surface(icon, hints, 16 * self.s),
+                           "desktop": desktop, "app": app or "", "keys": {k.lower() for k in (desktop, app) if k}})
+        self.pump()
+        return False
+
+    # ---- animation
+    def pump(self):
+        used = {it["slot"] for it in self.items}
+        while self.queue and len(self.items) < self.MAX:
+            slot = next(i for i in range(self.MAX) if i not in used)
+            used.add(slot)
+            it = self.queue.pop(0)
+            it["slot"], it["t0"] = slot, time.monotonic()
+            self.items.append(it)
+            if self.sound:
+                run_quiet(["paplay", self.sound])
+        if self.items and not self._timer:
+            self.s = self.hb.scale
+            g = self.hb.geo
+            w, h = self.TW * self.s, self.MAX * self.TH * self.s
+            self.set_size_request(w, h)
+            self.resize(w, h)
+            self.move(g.x + g.width - w, g.y)
+            self.show_all()
+            self.get_window().raise_()
+            self._timer = GLib.timeout_add(16, self.tick)
+
+    def tick(self):
+        now, total = time.monotonic(), 2 * self.SLIDE + self.SHOW
+        self.items = [it for it in self.items if now - it["t0"] < total]
+        self.pump()
+        if not self.items and not self.queue:
+            self._timer = 0
+            self.hide()
+            return False
+        self.update_input()
+        self.queue_draw()
+        return True
+
+    def update_input(self):
+        """Only the toasts themselves take clicks; the rest of the strip stays click-through."""
+        gw, s, now = self.get_window(), self.s, time.monotonic()
+        if gw is None:
+            return
+        region = cairo.Region()
+        for it in self.items:
+            x = int(self.offset(now - it["t0"]) * self.TW * s)
+            if x < self.TW * s:
+                region.union(cairo.RectangleInt(x, it["slot"] * self.TH * s, self.TW * s - x, self.TH * s))
+        gw.input_shape_combine_region(region, 0, 0)
+
+    def on_press(self, _w, ev):
+        if ev.type != Gdk.EventType.BUTTON_PRESS:
+            return True
+        s, now = self.s, time.monotonic()
+        for it in self.items:
+            x, y = self.offset(now - it["t0"]) * self.TW * s, it["slot"] * self.TH * s
+            if x <= ev.x < self.TW * s and y <= ev.y < y + self.TH * s:
+                if ev.button == 1:
+                    self.open_app(it)
+                it["t0"] = min(it["t0"], now - self.SLIDE - self.SHOW)      # slide it out
+                break
+        return True
+
+    def open_app(self, it):
+        """Bring the sender's window to the front, or start the app when it has no window."""
+        hb = self.hb
+        if hb.wnck is not None and it["keys"]:
+            for w in hb.wnck.get_windows():
+                if w.get_window_type() == Wnck.WindowType.NORMAL and names_match(window_names(w), it["keys"]):
+                    hb.focus_window(w)
+                    return
+        app = Gio.DesktopAppInfo.new(it["desktop"] + ".desktop") if it["desktop"] else None
+        if app is None and it["app"]:
+            want = it["app"].lower()
+            for a in Gio.AppInfo.get_all():
+                aid = (a.get_id() or "").lower()
+                if a.should_show() and ((a.get_display_name() or "").lower() == want or aid[:-8] == want):
+                    app = a
+                    break
+        if app is not None:
+            hb.launch(app)
+
+    def offset(self, t):
+        """0 = fully in, 1 = fully out (off the right edge)."""
+        ease = lambda x: x * x * (3 - 2 * x)
+        if t < self.SLIDE:
+            return 1 - ease(t / self.SLIDE)
+        if t > self.SLIDE + self.SHOW:
+            return ease(min(1.0, (t - self.SLIDE - self.SHOW) / self.SLIDE))
+        return 0.0
+
+    # ---- drawing
+    def fit(self, cr, text, px, max_w):
+        lay = make_layout(cr, text, px)
+        if lay.get_pixel_size()[0] <= max_w:
+            return lay
+        while len(text) > 1:
+            text = text[:-1]
+            lay = make_layout(cr, text.rstrip() + "...", px)
+            if lay.get_pixel_size()[0] <= max_w:
+                break
+        return lay
+
+    def paint(self, cr):
+        s = self.s
+        cr.set_operator(cairo.OPERATOR_SOURCE); cr.set_source_rgba(0, 0, 0, 0); cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+        now = time.monotonic()
+        for it in self.items:
+            x, y = self.offset(now - it["t0"]) * self.TW * s, it["slot"] * self.TH * s
+            if self.tex is not None:
+                paint_sprite(cr, self.tex, x, y, s)
+            else:                                                   # no toast.png: plain dark plate with a light border
+                cr.set_source_rgb(*rgb(0x5A5A5A)); cr.rectangle(x, y, self.TW * s, self.TH * s); cr.fill()
+                cr.set_source_rgb(*rgb(0x1E1E1E)); cr.rectangle(x + 2 * s, y + 2 * s, (self.TW - 4) * s, (self.TH - 4) * s); cr.fill()
+            icon = it["icon"]
+            if icon is not None:
+                cr.save()
+                cr.translate(x + 8 * s, y + 8 * s)
+                cr.scale(16 * s / icon.get_width(), 16 * s / icon.get_height())
+                cr.set_source_surface(icon, 0, 0)
+                cr.paint()
+                cr.restore()
+            for text, color, base in ((it["head"], 0xFFFF00, 14), (it["body"], 0xFFFFFF, 25)):     # baselines like the game
+                lay = self.fit(cr, text, FONT_EM * s * self.TEXT_K, 124 * s)
+                top = base * s - lay.get_baseline() / Pango.SCALE
+                cr.set_source_rgb(*rgb(0x3F3F00 if color == 0xFFFF00 else 0x3F3F3F)); cr.move_to(x + 30 * s + s, y + top + s); PangoCairo.show_layout(cr, lay)
+                cr.set_source_rgb(*rgb(color)); cr.move_to(x + 30 * s, y + top); PangoCairo.show_layout(cr, lay)
+
+
 
 
 
@@ -1160,6 +1406,7 @@ class Hotbar(Gtk.Window):
         self.cal = CalendarPop()
         self.chest = ChestPop(self)
         self.inv = Inventory(self)
+        self.toasts = Toasts(self)
         self.super_tap = SuperTap(self.inv.toggle)
         self._reload_id = None
 
@@ -1316,7 +1563,7 @@ class Hotbar(Gtk.Window):
         if gw is None or not isinstance(gw, GdkX11.X11Window):
             return
         g = self.geo
-        bottom = Gdk.Screen.get_default().get_height() - (g.y + g.height) + self.hb_h
+        bottom = Gdk.Screen.get_default().get_root_window().get_height() - (g.y + g.height) + self.hb_h
         x0, x1 = g.x, g.x + g.width - 1
         xid = str(gw.get_xid())
         for prop, val in (("_NET_WM_STRUT_PARTIAL", "0,0,0,%d,0,0,0,0,0,0,%d,%d" % (bottom, x0, x1)),
@@ -2120,6 +2367,8 @@ def main():
             state["bar"].place()
             if not a.demo:
                 state["bar"].super_tap.start()
+                if state["bar"].cfg["show"].get("toasts", True):
+                    state["bar"].toasts.start()
 
     app.connect("activate", on_activate)
     act = Gio.SimpleAction.new("slot", GLib.VariantType.new("i"))
