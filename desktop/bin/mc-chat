@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""Minecraft chat terminal: press Super+T, type a command, read the output as chat lines."""
+
+
+import json, os, re, shutil, signal, sys
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("PangoCairo", "1.0")
+from gi.repository import Gtk, Gdk, Gio, GLib, Pango, PangoCairo
+
+APP_ID = "org.minecraftdesktop.Chat"
+CONFIG_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "mc-desktop", "hotbar.json")
+FONT_FAMILIES = "Monocraft, Minecraft, monospace"
+DEFAULT_SCALE = 3
+CHAT_W = 480                      # window width in GUI px
+ROWS = 14                         # visible chat rows (9 GUI px each)
+LINE = 9                          # GUI px per text row, as in the game
+INPUT_H = 12                      # input bar height in GUI px
+RAISE = 30                        # GUI px kept free above the hotbar for the HUD
+MAX_MSGS = 400                    # chat history kept
+MAX_LINES = 5000                  # output lines of one command before it is stopped
+HISTORY = 100
+
+WHITE, GRAY, YELLOW, RED = (1, 1, 1), (0.67, 0.67, 0.67), (1, 1, 0.33), (1, 0.33, 0.33)
+ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+TERMINALS = [["gnome-terminal", "--working-directory={cwd}", "--", "bash", "-c", "{cmd}"],
+             ["x-terminal-emulator", "-e", "bash", "-c", "{cmd}"],
+             ["xfce4-terminal", "--working-directory={cwd}", "-x", "bash", "-c", "{cmd}"],
+             ["kitty", "--directory", "{cwd}", "bash", "-c", "{cmd}"],
+             ["xterm", "-e", "bash", "-c", "{cmd}"]]
+HELP = ["Type a shell command and press Enter (a leading / is ignored).",
+        "cd, clear, help, exit are built in. !cmd opens a real terminal window.",
+        "Ctrl+C stops the running command, Ctrl+D closes its stdin, Esc closes the chat."]
+
+
+def gui_scale():
+    try:
+        with open(CONFIG_FILE) as f:
+            return max(1, int(json.load(f).get("scale", DEFAULT_SCALE)))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return DEFAULT_SCALE
+
+
+def short(path):
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
+
+
+class Chat(Gtk.Window):
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        self.s = gui_scale()
+        self.msgs = []                                           # (text, rgb)
+        self.cwd, self.oldpwd = os.path.expanduser("~"), None
+        self.proc, self.cancel, self.nlines, self.offset = None, None, 0, 0
+        self.hist, self.hpos, self._seat = [], 0, None
+        self.set_title("Minecraft chat")
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.set_skip_taskbar_hint(True); self.set_skip_pager_hint(True)
+        self.set_type_hint(Gdk.WindowTypeHint.DOCK)               # same stacking as the inventory: above apps, no alt-tab
+        self.set_keep_above(True)
+        self.stick()
+        scr = self.get_screen()
+        vis = scr.get_rgba_visual()
+        if vis is not None and scr.is_composited():
+            self.set_visual(vis)
+
+        s = self.s
+        self.W, self.area_h, self.in_h = CHAT_W * s, ROWS * LINE * s, INPUT_H * s
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.area = Gtk.DrawingArea()
+        self.area.set_size_request(self.W, self.area_h)
+        self.area.add_events(Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
+        self.area.connect("draw", self.paint)
+        self.area.connect("scroll-event", self.on_scroll)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.prompt = Gtk.Label()
+        self.prompt.set_name("mcchat-prompt")
+        self.entry = Gtk.Entry()
+        self.entry.set_name("mcchat-entry")
+        self.entry.set_has_frame(False)
+        row.pack_start(self.prompt, False, False, 0)
+        row.pack_start(self.entry, True, True, 0)
+        row.set_size_request(self.W, self.in_h)
+        box.pack_start(self.area, False, False, 0)
+        box.pack_start(row, False, False, 0)
+        self.add(box)
+        self.style()
+        self.entry.connect("activate", self.on_enter)
+        self.connect("key-press-event", self.on_key)
+        self.set_prompt()
+        self.say("Minecraft chat. Type a command, or 'help'.", YELLOW)
+
+    def style(self):
+        px, pad = 9 * self.s, self.s * 2
+        css = ("#mcchat-entry, #mcchat-prompt { background: rgba(0,0,0,0.5); color: #ffffff; border: none; box-shadow: none;"
+               " font: %dpx %s; padding: 0 %dpx; min-height: %dpx; }"
+               "#mcchat-prompt { color: #aaaaaa; padding-right: 0; }"
+               "#mcchat-entry { caret-color: #ffffff; }"
+               "#mcchat-entry selection { background: #3355aa; color: #ffffff; }") % (px, FONT_FAMILIES, pad, self.in_h)
+        prov = Gtk.CssProvider()
+        try:
+            prov.load_from_data(css.encode())
+        except GLib.Error as e:
+            print("mc-chat: css error: %s" % e, file=sys.stderr)
+            return
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def set_prompt(self):
+        self.prompt.set_text("%s >" % short(self.cwd) if not self.proc else "")
+
+    # ---- drawing
+    def layout(self, cr, text):
+        lay = PangoCairo.create_layout(cr)
+        fd = Pango.FontDescription(FONT_FAMILIES)
+        fd.set_absolute_size(9 * self.s * Pango.SCALE)
+        lay.set_font_description(fd)
+        lay.set_width((self.W - 2 * self.s) * Pango.SCALE)
+        lay.set_wrap(Pango.WrapMode.CHAR)
+        lay.set_text(text, -1)
+        return lay
+
+    def paint(self, area, cr):
+        s = self.s
+        rows = [(self.layout(cr, t), c) for t, c in self.msgs]
+        heights = [l.get_pixel_size()[1] for l, _c in rows]
+        self.offset = max(0, min(self.offset, sum(heights) - self.area_h))
+        y = self.area_h + self.offset
+        for (lay, col), h in zip(reversed(rows), reversed(heights)):
+            y -= h
+            if y >= self.area_h:
+                continue
+            if y + h <= 0:
+                break
+            cr.set_source_rgba(0, 0, 0, 0.5)
+            cr.rectangle(0, y, self.W, h)
+            cr.fill()
+            cr.set_source_rgb(col[0] / 4, col[1] / 4, col[2] / 4)    # the game's drop shadow
+            cr.move_to(2 * s + s, y + s)
+            PangoCairo.show_layout(cr, lay)
+            cr.set_source_rgb(*col)
+            cr.move_to(2 * s, y)
+            PangoCairo.show_layout(cr, lay)
+        return False
+
+    def say(self, text, color=WHITE):
+        text = ANSI.sub("", text).replace("\r", "").expandtabs(8)
+        self.msgs.append((text, color))
+        del self.msgs[:-MAX_MSGS]
+        self.offset = 0
+        self.area.queue_draw()
+
+    def on_scroll(self, _w, ev):
+        step = LINE * self.s * 3
+        if ev.direction == Gdk.ScrollDirection.UP:
+            self.offset += step
+        elif ev.direction == Gdk.ScrollDirection.DOWN:
+            self.offset = max(0, self.offset - step)
+        elif ev.direction == Gdk.ScrollDirection.SMOOTH:
+            self.offset = max(0, self.offset - int(ev.delta_y * step))
+        self.area.queue_draw()
+        return True
+
+    # ---- show / hide
+    def toggle(self):
+        self.close_chat() if self.get_visible() else self.open_chat()
+
+    def open_chat(self):
+        mon = Gdk.Display.get_default().get_primary_monitor() or Gdk.Display.get_default().get_monitor(0)
+        wa = mon.get_workarea()
+        self.resize(self.W, self.area_h + self.in_h)
+        self.move(wa.x + 2 * self.s, wa.y + wa.height - RAISE * self.s - self.area_h - self.in_h)
+        self.show_all()
+        self.get_window().raise_()
+        self.entry.grab_focus()
+        GLib.timeout_add(60, self._grab)                         # keyboard only: the mouse keeps working in other windows
+
+    def _grab(self):
+        gw = self.get_window()
+        if gw is None or not self.get_visible():
+            return False
+        self._seat = Gdk.Display.get_default().get_default_seat()
+        self._seat.grab(gw, Gdk.SeatCapabilities.KEYBOARD, True, None, None, None, None)
+        self.entry.grab_focus()
+        return False
+
+    def close_chat(self):
+        if self._seat is not None:
+            self._seat.ungrab()
+            self._seat = None
+        self.hide()
+
+    # ---- keys
+    def on_key(self, _w, ev):
+        k, ctrl = ev.keyval, bool(ev.state & Gdk.ModifierType.CONTROL_MASK)
+        if k == Gdk.KEY_Escape:
+            self.close_chat()
+        elif ctrl and k in (Gdk.KEY_c, Gdk.KEY_C) and self.proc and not self.entry.get_selection_bounds():
+            self.interrupt()
+        elif ctrl and k in (Gdk.KEY_d, Gdk.KEY_D) and self.proc:
+            self.close_stdin()
+        elif ctrl and k in (Gdk.KEY_l, Gdk.KEY_L):
+            self.msgs.clear(); self.area.queue_draw()
+        elif k in (Gdk.KEY_Up, Gdk.KEY_Down):
+            self.browse(-1 if k == Gdk.KEY_Up else 1)
+        elif k in (Gdk.KEY_Page_Up, Gdk.KEY_Page_Down):
+            self.offset = max(0, self.offset + (ROWS - 1) * LINE * self.s * (1 if k == Gdk.KEY_Page_Up else -1))
+            self.area.queue_draw()
+        elif k in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab):
+            pass
+        else:
+            return False
+        return True
+
+    def browse(self, d):
+        if not self.hist:
+            return
+        self.hpos = max(0, min(len(self.hist), self.hpos + d))
+        self.entry.set_text(self.hist[self.hpos] if self.hpos < len(self.hist) else "")
+        self.entry.set_position(-1)
+
+    # ---- running commands
+    def on_enter(self, entry):
+        line = entry.get_text()
+        entry.set_text("")
+        if self.proc:                                            # a command is running: this is its stdin
+            self.say(line, GRAY)
+            try:
+                self.proc.get_stdin_pipe().write_all((line + "\n").encode(), None)
+            except (GLib.Error, AttributeError):
+                pass
+            return
+        line = line.strip()
+        if line.startswith("/"):
+            line = line[1:].strip()
+        if not line:
+            return
+        if not self.hist or self.hist[-1] != line:
+            self.hist = (self.hist + [line])[-HISTORY:]
+        self.hpos = len(self.hist)
+        self.say("%s > %s" % (short(self.cwd), line), GRAY)
+        self.run(line)
+
+    def run(self, line):
+        if line in ("exit", "quit", "close"):
+            self.close_chat()
+        elif line == "clear":
+            self.msgs.clear(); self.area.queue_draw()
+        elif line == "help":
+            for h in HELP:
+                self.say(h, YELLOW)
+        elif re.match(r"cd(\s|$)", line):
+            self.chdir(line[2:].strip())
+        elif line.startswith("!"):
+            self.open_terminal(line[1:].strip())
+        else:
+            self.spawn(line)
+
+    def chdir(self, arg):
+        arg = arg.strip("'\"") or "~"
+        target = self.oldpwd if arg == "-" and self.oldpwd else arg
+        new = os.path.normpath(os.path.join(self.cwd, os.path.expanduser(target)))
+        if os.path.isdir(new) and os.access(new, os.X_OK):
+            self.oldpwd, self.cwd = self.cwd, new
+            self.set_prompt()
+        else:
+            self.say("cd: %s: no such directory" % arg, RED)
+
+    def open_terminal(self, cmd):
+        cmd = (cmd + "; exec bash") if cmd else "exec bash"
+        for t in TERMINALS:
+            if shutil.which(t[0]):
+                argv = [a.format(cwd=self.cwd, cmd=cmd) for a in t]
+                try:
+                    Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE)
+                except GLib.Error as e:
+                    self.say("could not start %s: %s" % (t[0], e.message), RED)
+                return
+        self.say("no terminal emulator found", RED)
+
+    def spawn(self, line):
+        try:
+            launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE
+                                                  | Gio.SubprocessFlags.STDERR_MERGE)
+            launcher.set_cwd(self.cwd)
+            for k, v in (("TERM", "dumb"), ("NO_COLOR", "1"), ("PAGER", "cat"), ("GIT_PAGER", "cat")):
+                launcher.setenv(k, v, True)
+            self.proc = launcher.spawnv(["setsid", "bash", "-c", line])   # own process group so Ctrl+C reaches children
+        except GLib.Error as e:
+            self.say("could not run: %s" % e.message, RED)
+            return
+        self.nlines, self.cancel = 0, Gio.Cancellable()
+        self.set_prompt()
+        proc, cancel = self.proc, self.cancel
+        stream = Gio.DataInputStream.new(proc.get_stdout_pipe())
+        done = {"eof": False, "code": None, "end": False}
+
+        def finish():
+            if done["end"] or self.proc is not proc:
+                return False
+            done["end"] = True
+            cancel.cancel()
+            code = done["code"]
+            if code:
+                self.say("Process exited with code %d" % code if code > 0 else "Process stopped", RED)
+            self.proc = self.cancel = None
+            self.set_prompt()
+            return False
+
+        def on_line(st, res):
+            if done["end"]:
+                return
+            try:
+                data, _n = st.read_line_finish_utf8(res)
+            except GLib.Error:
+                data = None
+            if data is None:
+                done["eof"] = True
+                if done["code"] is not None:
+                    finish()
+                return
+            self.nlines += 1
+            if self.nlines > MAX_LINES:
+                self.say("Too much output, stopped.", RED)
+                self.interrupt(hard=True)
+                return
+            self.say(data)
+            st.read_line_async(GLib.PRIORITY_DEFAULT, cancel, on_line)
+
+        def on_exit(p, res):
+            try:
+                p.wait_finish(res)
+            except GLib.Error:
+                pass
+            done["code"] = p.get_exit_status() if p.get_if_exited() else -1
+            if done["eof"]:
+                finish()
+            else:
+                GLib.timeout_add(150, finish)                    # let the last output through; "cmd &" may keep the pipe open
+
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, cancel, on_line)
+        proc.wait_async(None, on_exit)
+
+    def interrupt(self, hard=False):
+        if not self.proc:
+            return
+        try:
+            os.killpg(int(self.proc.get_identifier()), signal.SIGKILL if hard else signal.SIGINT)
+        except (OSError, TypeError, ValueError):
+            pass
+
+    def close_stdin(self):
+        try:
+            self.proc.get_stdin_pipe().close(None)
+        except (GLib.Error, AttributeError):
+            pass
+
+
+def main():
+    app = Gtk.Application(application_id=APP_ID)
+    state = {"chat": None}
+
+    def on_activate(_a):
+        if state["chat"] is None:
+            state["chat"] = Chat()
+            app.add_window(state["chat"])
+            state["chat"].open_chat()
+        else:
+            state["chat"].toggle()
+
+    app.connect("activate", on_activate)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, lambda: (app.quit(), False)[1])
+    sys.exit(app.run([sys.argv[0]]))
+
+
+if __name__ == "__main__":
+    main()

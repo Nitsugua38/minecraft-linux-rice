@@ -35,7 +35,8 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     say "Removing the Minecraft desktop..."
     if [[ -x "${BIN_DIR}/mc-world-setup" && -z "${MC_DESKTOP_SKIP_SETTINGS:-}" ]]; then run_setup --restore; fi
     pkill -u "${SUDO_USER:-nobody}" -x mc-hotbar 2>/dev/null || true
-    rm -f "${AUTOSTART}" "${BIN_DIR}/mc-hotbar" "${BIN_DIR}/mc-world-setup"
+    pkill -u "${SUDO_USER:-nobody}" -f '^python3 /usr/local/bin/mc-chat' 2>/dev/null || true
+    rm -f "${AUTOSTART}" "${BIN_DIR}/mc-hotbar" "${BIN_DIR}/mc-world-setup" "${BIN_DIR}/mc-chat"
     rm -rf "${DATA}"
     rmdir --ignore-fail-on-non-empty /usr/share/minecraft-desktop 2>/dev/null || true
     say "Done. Log out and back in."
@@ -53,7 +54,7 @@ if ((${#missing[@]})); then
 fi
 
 # 2. programs
-for f in mc-hotbar mc-world-setup; do
+for f in mc-hotbar mc-world-setup mc-chat; do
     [[ -f "${HERE}/bin/${f}" ]] || die "Missing ${HERE}/bin/${f}"
     install -Dm755 "${HERE}/bin/${f}" "${BIN_DIR}/${f}"
 done

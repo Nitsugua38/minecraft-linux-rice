@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Per-user Cinnamon settings for the Minecraft desktop. Run as the normal user (the installer does this for you).
 
-  mc-world-setup --apply     set the world wallpaper, hide desktop icons, auto-hide the panel, add Super+1..9
+  mc-world-setup --apply     set the world wallpaper, hide desktop icons, auto-hide the panel, add Super+1..9 and Super+T (chat terminal)
   mc-world-setup --restore   put everything back the way it was
   mc-world-setup --status    show the current values
 """
@@ -18,6 +18,7 @@ KB_ONE = "org.cinnamon.desktop.keybindings.custom-keybinding"
 KB_PATH = "/org/cinnamon/desktop/keybindings/custom-keybindings/%s/"
 IDS = ["mc-hotbar-%d" % i for i in range(1, 10)]
 HOTBAR_CMD = "mc-hotbar --slot %d"
+CHAT_ID, CHAT_CMD, CHAT_KEY = "mc-chat", "mc-chat", "<Super>t"
 
 # (schema, key) pairs that get backed up and restored
 TRACKED = [
@@ -125,8 +126,14 @@ def apply():
         put(path, "binding", "['<Super>%d']" % i)
         if kid not in ids:
             ids.append(kid)
+    path = "%s:%s" % (KB_ONE, KB_PATH % CHAT_ID)
+    put(path, "name", "'Minecraft chat terminal'")
+    put(path, "command", "'%s'" % CHAT_CMD)
+    put(path, "binding", "['%s']" % CHAT_KEY)
+    if CHAT_ID not in ids:
+        ids.append(CHAT_ID)
     put(KB, "custom-list", quote_list(ids))
-    print("shortcuts added: Super+1 ... Super+9 activate the hotbar slots")
+    print("shortcuts added: Super+1 ... Super+9 activate the hotbar slots, Super+T opens the chat terminal")
 
 
 def restore():
@@ -135,7 +142,7 @@ def restore():
         return
     with open(BACKUP) as f:
         data = json.load(f)
-    for kid in IDS:                                              # remove our shortcuts first
+    for kid in IDS + [CHAT_ID]:                                  # remove our shortcuts first
         path = "%s:%s" % (KB_ONE, KB_PATH % kid)
         for key in ("name", "command", "binding"):
             gs("reset", path, key)

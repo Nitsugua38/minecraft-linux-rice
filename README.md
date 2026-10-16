@@ -33,6 +33,7 @@ Requirements: Linux Mint with Cinnamon on X11, LightDM (Mint's default), and a c
 - **Inventory**: press `Super` alone to open every installed app in the creative-inventory layout. Type to search, `Enter` launches the first result, drag an app onto a hotbar slot to pin it, drag it out of the bar to unpin it.
 - **Game Menu**: press `Esc` twice inside the inventory. *Back to Game*, *Lock*, *Sleep*, *Give Feedback*, *Report Bugs*, *Options...* (system settings), *Close to LAN* (log out) and *Save and Quit* (power off or restart).
 - **Advancement toasts**: every desktop notification shows up top right as an advancement toast, and clicking one brings the sending app to the front. Cinnamon's own notification popups are turned off for this.
+- **Chat terminal**: press `Super+T` to open a chat bar at the bottom left. Type a shell command, the output appears as chat lines. `Ctrl+C` stops a command, `!cmd` opens a real terminal window, `Esc` closes.
 - **Sounds**: a click on the hotbar and in the Game Menu, and a sound for each toast.
 
 
