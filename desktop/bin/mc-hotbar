@@ -33,9 +33,10 @@ WIRELESS_FILE = "/proc/net/wireless"
 SLOTS = 9
 CHEST = SLOTS - 1
 BAR_W, BAR_H = 182, 22             # hotbar sprite size in GUI px
-HUD_H = 50                         # window height in GUI px: hotbar + XP bar + clock row + hearts row + armor row
+HUD_H = 50                         # window height in GUI px: hotbar + XP bar + hearts row + armor row (+ headroom)
 HUD_K = 0.9                        # hearts / armor / hunger are drawn at this fraction of the GUI scale
-CLOCK_K = 0.85                     # clock text size as a fraction of the normal text size
+CLOCK_K = 1.0                      # offhand clock text size as a fraction of the normal text size
+DAY_K = 0.85                       # XP-level number (day of the month) size as a fraction of the normal text size
 DEFAULT_SCALE = 3                  # GUI scale (1080p game default would be 4; 3 keeps it a bit smaller)
 DEFAULT_STRIP = 0.30               # opacity of the dark strip behind the HUD while a program is open
 DEFAULT_SHOW = {"battery": "auto", "wifi": "auto", "volume": True, "clock": True, "updates": True, "toasts": True}
@@ -139,7 +140,7 @@ def load_sprites(assets):
 
 # Minecraft HUD sprites
 HUD_FILES = ["heart_container", "heart_full", "heart_half", "armor_empty", "armor_half", "armor_full",
-             "food_empty", "food_full", "xp_bg", "xp_fill", "chest"]
+             "food_empty", "food_full", "xp_bg", "xp_fill", "chest", "hotbar_offhand_left"]
 
 
 def rgb(v):
@@ -152,6 +153,15 @@ def load_hud_sprites(assets):
         if surf is not None:
             hud[name] = surf
     return hud
+
+
+def load_clock_frames(assets):
+    """Clock item frames: clock_00..clock_63 (vanilla, frame 0 = noon) or a single clock.png. May be empty."""
+    frames = [to_surface(load_pixbuf(assets, "clock_%02d.png" % i)) for i in range(64)]
+    if all(f is not None for f in frames):
+        return frames
+    one = to_surface(load_pixbuf(assets, "clock.png"))
+    return [one] if one is not None else []
 
 
 def paint_sprite(cr, surf, x, y, s, alpha=1.0):
@@ -1391,6 +1401,8 @@ class Hotbar(Gtk.Window):
         self.scale = scale_override or self.cfg["scale"]
         self.bar_surf, self.sel_surf = load_sprites(assets)
         self.hud = load_hud_sprites(assets)
+        self.clock_frames = load_clock_frames(assets)
+        self._clock_tw = {}                                  # scale -> pixel width of the clock text
         self.click_path = next((p for p in (os.path.join(assets, "click." + e) for e in ("ogg", "wav", "mp3", "flac")) if os.path.isfile(p)), None)
         self._click_t = 0.0
         self.hover, self.hover_key = None, None
@@ -1584,6 +1596,9 @@ class Hotbar(Gtk.Window):
             region = cairo.Region(cairo.RectangleInt(0, 0, self.win_w, self.hb_h))
         else:
             region = cairo.Region(cairo.RectangleInt(self.L(), 0, BAR_W * s, self.hb_h))
+            rect = self.offhand_rect()
+            if rect is not None:
+                region.union(cairo.RectangleInt(int(rect[0]), 0, int(rect[2]), self.hb_h))
         try:
             gw.input_shape_combine_region(region, 0, 0)
         except Exception:
@@ -1854,8 +1869,10 @@ class Hotbar(Gtk.Window):
         s, L, H = self.scale, self.L(), HUD_H
         hs, hy, ay = self.rows()
         out = []
-        if self.shown("clock"):
-            out.append(("clock", L + (BAR_W // 2 - 13) * s, (H - 38) * s, 26 * s, 9 * s))
+        rect = self.offhand_rect()
+        if rect is not None:
+            out.append(("clock",) + rect)
+            out.append(("day", L + (BAR_W // 2 - 8) * s, (H - 38) * s, 16 * s, 9 * s))
         if self.shown("volume"):
             out.append(("xp", L, (H - 30) * s, BAR_W * s, 7 * s))
         if self.shown("battery"):
@@ -1865,6 +1882,22 @@ class Hotbar(Gtk.Window):
         if self.shown("updates"):
             out.append(("hunger", L + BAR_W * s - 81 * hs, hy, 81 * hs, 9 * hs))
         return out
+
+    def clock_text_w(self):
+        s = self.scale
+        if s not in self._clock_tw:
+            cr = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1))
+            self._clock_tw[s] = make_layout(cr, "00:00", FONT_EM * s * CLOCK_K).get_pixel_size()[0] + 3 * s   # + bold + outline
+        return self._clock_tw[s]
+
+    def offhand_rect(self):
+        """(x, y, w, h) of the offhand clock (text + slot) left of the hotbar, in full-HUD pixels; None when hidden."""
+        if not self.shown("clock"):
+            return None
+        s = self.scale
+        tw = self.clock_text_w() + 4 * s
+        x = self.L() - 29 * s - tw
+        return x, (HUD_H - BAR_H - 1) * s, tw + 29 * s, (BAR_H + 1) * s
 
     def slot_at(self, x, y):
         s = self.scale
@@ -1908,6 +1941,40 @@ class Hotbar(Gtk.Window):
         self.draw_hud(cr, self.L(), self.scale, HUD_H)
         self.paint_bar(cr)
 
+    def paint_offhand(self, cr, hy):
+        """Offhand slot holding a clock item, with the time next to it: lives in the hotbar row, so apps never cover it."""
+        if not self.shown("clock"):
+            return
+        s = self.scale
+        sx = self.L() - 29 * s
+        if "hotbar_offhand_left" in self.hud:
+            paint_sprite(cr, self.hud["hotbar_offhand_left"], sx, hy - s, s)
+        else:                                                    # placeholder slot
+            cr.set_source_rgba(0, 0, 0, 0.55)
+            cr.rectangle(sx, hy, 22 * s, 22 * s); cr.fill()
+            cr.set_source_rgb(0.55, 0.55, 0.55)
+            cr.set_line_width(s)
+            cr.rectangle(sx + s / 2, hy + s / 2, 21 * s, 21 * s); cr.stroke()
+        if self.clock_frames:                                    # dial follows the real sun/moon
+            t = time.localtime()
+            n = len(self.clock_frames)
+            surf = self.clock_frames[int(((t.tm_hour + t.tm_min / 60.0 - 12) / 24.0 % 1.0) * n) % n]
+            cr.save()
+            cr.translate(sx + 3 * s, hy + 3 * s)
+            cr.scale(16 * s / surf.get_width(), 16 * s / surf.get_height())
+            cr.set_source_surface(surf, 0, 0)
+            cr.get_source().set_filter(cairo.FILTER_NEAREST)
+            cr.paint()
+            cr.restore()
+        layout = make_layout(cr, self._minute or time.strftime("%H:%M"), FONT_EM * s * CLOCK_K)
+        tw, th = layout.get_pixel_size()
+        x, y = sx - 5 * s - tw, hy + (22 * s - th) // 2
+        cr.set_source_rgb(0.247, 0.165, 0.0)                     # vanilla gold text shadow (#3F2A00)
+        cr.move_to(x + s, y + s); PangoCairo.show_layout(cr, layout)
+        cr.set_source_rgb(1.0, 0.667, 0.0)                       # vanilla gold (#FFAA00)
+        for dx in (0, s):                                        # vanilla bold: same glyphs again 1 GUI px to the right
+            cr.move_to(x + dx, y); PangoCairo.show_layout(cr, layout)
+
     def paint_bar(self, cr):
         s, L, H = self.scale, self.L(), HUD_H
         if self.strip_cur > 0.003:
@@ -1915,6 +1982,7 @@ class Hotbar(Gtk.Window):
             cr.set_source_rgba(0, 0, 0, self.strip_cur)
             cr.rectangle(0, H * s - band, self.win_w, band); cr.fill()
         hy = (H - BAR_H) * s
+        self.paint_offhand(cr, hy)
         if self.bar_surf is not None:
             paint_sprite(cr, self.bar_surf, L, hy, s)
         for i in range(SLOTS):
@@ -1983,12 +2051,12 @@ class Hotbar(Gtk.Window):
             cr.rectangle(L, xy, int(round(frac * BAR_W)) * s, 5 * s); cr.clip()
             paint_sprite(cr, hud["xp_fill"], L, xy, s, 0.35 if self.muted else 1.0)   # muted = faded bar
             cr.restore()
-        if self.shown("clock"):                                  # XP level number = clock, its bottom touches the XP bar
-            layout = make_layout(cr, self._minute or time.strftime("%H:%M"), FONT_EM * s * CLOCK_K)
+        if self.shown("clock"):                                  # XP level number = day of the month, its bottom touches the XP bar
+            layout = make_layout(cr, str(time.localtime().tm_mday), FONT_EM * s * DAY_K)
             tw, _th = layout.get_pixel_size()
             base = layout.get_baseline() / Pango.SCALE
             x, y = (self.win_w - tw) // 2, (H - 28) * s - base
-            o = max(1, int(round(s * CLOCK_K)))
+            o = max(1, int(round(s * DAY_K)))
             cr.set_source_rgb(0, 0, 0)
             for dx, dy in ((o, 0), (-o, 0), (0, o), (0, -o)):
                 cr.move_to(x + dx, y + dy); PangoCairo.show_layout(cr, layout)
@@ -2117,7 +2185,7 @@ class Hotbar(Gtk.Window):
             if self.vol is None:
                 return "Volume: unavailable"
             return "Volume: %d%%%s" % (self.vol, " (muted)" if self.muted else "")
-        if kind == "clock":
+        if kind in ("clock", "day"):
             return time.strftime("%A %d %B %Y")
         return None
 
@@ -2144,7 +2212,7 @@ class Hotbar(Gtk.Window):
             return True
         fx, fy = self.to_full(_w, ev.x, ev.y)
         key = self.key_at(fx, fy)
-        if key is None or key[0] != "clock":
+        if key is None or key[0] not in ("clock", "day"):
             self.cal.hide()
         if key is None:
             return True
@@ -2182,7 +2250,7 @@ class Hotbar(Gtk.Window):
                 open_first(PANEL_UPDATES)
                 if not self.demo:
                     GLib.timeout_add_seconds(90, self.poll_updates_once)   # re-check after you had time to install
-            elif kind == "clock":
+            elif kind in ("clock", "day"):
                 rx, ry, rw, _rh = self.key_rect(key)
                 win_x, win_y = self.origin()
                 self.cal.toggle(win_x + rx + rw / 2, win_y + ry, self.geo, self.server_time())
