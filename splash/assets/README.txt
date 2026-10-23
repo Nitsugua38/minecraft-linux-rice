@@ -1,0 +1,1 @@
+other assets are installed automatically from your Minecraft JAR.

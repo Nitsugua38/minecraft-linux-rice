@@ -43,17 +43,51 @@ Requirements: Linux Mint with Cinnamon on X11, LightDM (Mint's default), and a c
 ---
 
 
-## Add your own logos!
+## Assets (textures, sounds, logos)
 
-For legal reasons, copyrighted logos, artworks, textures and music are NOT included, you need to add them yourself.
+For legal reasons, Mojang's logos, textures, sounds and music are **not included** in this repo.
 
-- "Mojang Studios" logo inside [plymouth/assets/logo.png](plymouth/assets/logo.png)
-- "Minecraft" logo inside [greeter/assets/logo.png](greeter/assets/logo.png)
-- 6 "panorama" images inside [greeter/assets/1/](greeter/assets/1/) - You can use your own screenshots or download them from https://mcasset.cloud/1.20/assets/minecraft/textures/gui/title/background - You can add multiple sets of images in different folders (naming them "2", "3", etc., one will be randomly picked each time).
-- The following icons extracted from Minecraft inside [desktop/assets/](desktop/assets/): `armor_empty.png`, `armor_full.png`, `armor_half.png`, `chest.png`, `food_empty.png`, `food_half.png`, `food_full.png`, `heart_container.png`, `heart_full.png`, `heart_half.png`, `hotbar_selection.png`, `hotbar.png`, `hotbar_offhand_left.png`, `clock_00.png`..`clock_63.png` (or a single `clock.png`), `world.png`, `xp_bg.png`, `xp_fill.png`, `inventory.png`, `scroller.png`, `button.png`, `button_highlighted.png`, `click.ogg`, `toast.png`, `toast.ogg`
-- Startup music inside [greeter/assets/music/](greeter/assets/music/)
 
-Any missing desktop texture is simply not drawn, or replaced by a plain placeholder.
+**`sudo ./install.sh` offers to copy them for you** from your own Minecraft Java installation
+(`helper/asset_installer.sh`: it takes the newest version in `~/.minecraft` and the sounds the launcher already downloaded; nothing is fetched from the internet and files you added yourself are kept).
+
+
+You can also run it on its own: `helper/asset_installer.sh [--minecraft-dir DIR] [--jar FILE] [--force]`.
+
+Every asset is optional: anything missing is simply not drawn or replaced by a plain placeholder.
+
+✅ = copied by the install script  ·  📦 = already in this repo  ·  ✋ = not in the game files, add it yourself
+
+| File | Folder | Used for | From the game files | |
+|---|---|---|---|:-:|
+| **Boot & login** | | | | |
+| `logo.png` | [plymouth/assets/](plymouth/assets/) | Mojang Studios logo on the boot screen | `gui/title/mojangstudios.png` (both halves joined) | ✅ |
+| `logo.png` | [greeter/assets/](greeter/assets/) | "Minecraft" logo on the login screen | `gui/title/minecraft.png` | ✅ |
+| `dirt.png` | [greeter/assets/](greeter/assets/), [splash/assets/](splash/assets/) | dirt background (login, "Generating world", "Saving world") | `block/dirt.png` | ✅ |
+| **Desktop textures** | | | | |
+| `hotbar.png`, `hotbar_selection.png` | [desktop/assets/](desktop/assets/) | the hotbar and its selection frame | `gui/sprites/hud/` | ✅ |
+| `hotbar_offhand_left.png` | [desktop/assets/](desktop/assets/) | offhand slot holding the clock | `gui/sprites/hud/` | ✅ |
+| `clock_00.png` … `clock_63.png` (or one `clock.png`) | [desktop/assets/](desktop/assets/) | clock item (its dial follows the real time) | `item/clock_*.png` | ✅ |
+| `heart_container.png`, `heart_full.png`, `heart_half.png` | [desktop/assets/](desktop/assets/) | hearts = battery | `gui/sprites/hud/heart/` | ✅ |
+| `armor_empty.png`, `armor_half.png`, `armor_full.png` | [desktop/assets/](desktop/assets/) | armor = Wi-Fi | `gui/sprites/hud/` | ✅ |
+| `food_empty.png`, `food_half.png`, `food_full.png` | [desktop/assets/](desktop/assets/) | hunger = free disk space | `gui/sprites/hud/` | ✅ |
+| `xp_bg.png`, `xp_fill.png` | [desktop/assets/](desktop/assets/) | XP bar = volume | `gui/sprites/hud/experience_bar_*.png` | ✅ |
+| `inventory.png`, `scroller.png` | [desktop/assets/](desktop/assets/) | inventory (app drawer) | `gui/container/creative_inventory/tab_items.png`, `.../scroller.png` | ✅ |
+| `button.png`, `button_highlighted.png` | [desktop/assets/](desktop/assets/) | Game Menu buttons | `gui/sprites/widget/` | ✅ |
+| `toast.png` | [desktop/assets/](desktop/assets/) | notification toasts (no texture: plain dark plate) | `gui/sprites/toast/advancement.png` | ✅ |
+| **Sounds & music** | | | | |
+| `click.ogg` (or `.wav` / `.mp3` / `.flac`) | [desktop/assets/](desktop/assets/) | click sound on the hotbar, inventory and menus | `sounds/random/click.ogg` | ✅ |
+| `toast.ogg` (or `.wav` / `.mp3` / `.flac`) | [desktop/assets/](desktop/assets/) | sound when a notification toast slides in | `sounds/ui/toast/in.ogg` | ✅ |
+| any `.ogg` / `.mp3` / `.flac` / `.wav` / `.m4a` | [greeter/assets/music/](greeter/assets/music/) | login screen music, a random track at a time | menu music: `music/menu/*.ogg` (Mutation, Moog City 2, Beginning 2, Floating Trees) | ✅ |
+| **Already included** | | | | |
+| `font.ttf` | [greeter/assets/](greeter/assets/) | [Monocraft](https://github.com/IdreesInc/Monocraft) font (open source), also installed for the desktop and splash | | 📦 |
+| `progress-box.png`, `progress-bar.png` | [plymouth/assets/](plymouth/assets/) | boot screen loading bar | | 📦 |
+| **Not in the game files** | | | | |
+| `1/panorama_0.png` … `panorama_5.png` | [greeter/assets/](greeter/assets/) | rotating login background; add more sets in `2/`, `3/`… (one is picked at random) | only older versions ship them (recent ones render it live): use your own screenshots | ✋ |
+| `chest.png` | [desktop/assets/](desktop/assets/) | chest slot icon (other open windows) | a rendered chest icon | ✋ |
+| `world.png` (or `.jpg` / `.webp`) | [desktop/assets/](desktop/assets/) | desktop wallpaper | your own screenshot | ✋ |
+
+Texture paths are relative to `assets/minecraft/textures/` inside the version `.jar`; sounds come from the launcher's `assets/objects`.
 
 
 ## Installation
