@@ -173,17 +173,18 @@
     return (m >= 1440 ? Math.floor(m / 1440) + "d " : "") + Math.floor(m % 1440 / 60) + "h " + pad(m % 60) + "m";
   }
   function renderRealm() {
-    var i = window.MC_INFO || {}, host = i.host || (L && L.hostname) || "This computer", bits = [];
+    var i = window.MC_INFO || {}, host = i.host || (L && L.hostname) || "This computer", net = [], power = [];
     $("realm-icon").textContent = host.charAt(0).toUpperCase();
     $("realm-name").textContent = host;
     $("realm-status").textContent = i.ip ? "Online" : "Offline";
     $("realm-status").className = i.ip ? "on" : "off";
     $("realm-os").textContent = [i.os, i.kernel].filter(Boolean).join(" - ") || "Linux";
-    if (i.ip) bits.push("IP " + i.ip);
-    if (i.net) bits.push(i.net);
-    if (i.battery) bits.push("Battery " + i.battery.pct + "%" + (i.battery.status === "Charging" ? " (charging)" : ""));
-    if (i.boot) bits.push("Up " + uptime(i.boot));
-    $("realm-motd").textContent = bits.join(" - ") || "No information available";
+    if (i.ip) net.push("IP " + i.ip);
+    if (i.net) net.push(i.net);
+    if (i.battery) power.push("Battery " + i.battery.pct + "%" + (i.battery.status === "Charging" ? " (charging)" : ""));
+    if (i.boot) power.push("Up " + uptime(i.boot));
+    $("realm-motd").textContent = net.join(" - ") || "No network";
+    $("realm-power").textContent = power.join(" - ");
   }
 
   /* ---------- options: music volume slider ---------- */

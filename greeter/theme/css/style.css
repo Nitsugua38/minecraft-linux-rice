@@ -116,12 +116,12 @@ h1 { margin: 0; font-weight: normal; font-size: 8rem; text-shadow: 1rem 1rem 0 #
 /* ---------- realms (this computer) ---------- */
 #realm-list { position: absolute; top: 36rem; left: 50%; transform: translateX(-50%); width: 260rem; padding: 2rem 4rem;
   background: rgba(0,0,0,.5); border-top: 2rem solid #000; border-bottom: 2rem solid #000; }
-.realm { display: flex; align-items: center; gap: 8rem; height: 36rem; }
+.realm { display: flex; align-items: center; gap: 8rem; height: 46rem; }
 .realm-text { flex: 1; min-width: 0; }
 #realm-head { display: flex; justify-content: space-between; }
 #realm-status.on { color: #55ff55; } #realm-status.off { color: #ff5555; }
 #realm-status::before { content: ""; display: inline-block; width: 4rem; height: 4rem; margin: 0 3rem 1rem 0; background: currentColor; }
-#realm-os, #realm-motd { color: #808080; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#realm-os, #realm-motd, #realm-power { color: #808080; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bottom-buttons { position: absolute; bottom: 20rem; left: 50%; transform: translateX(-50%); width: 200rem; }
 
 /* ---------- options ---------- */
