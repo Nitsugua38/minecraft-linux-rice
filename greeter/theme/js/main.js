@@ -51,6 +51,12 @@
       if (face) face.style.backgroundImage = 'url("assets/' + folder + '/panorama_' + i + '.png")';
     }
   }
+  function fitLogo() {
+    /* the game's title/minecraft.png is 4:1 with empty space under the logo (only its top 44/64 is drawn in game) */
+    var img = $("logo");
+    function check() { if (img.naturalWidth && img.naturalWidth === 4 * img.naturalHeight) img.classList.add("jar"); }
+    if (img.complete) check(); else img.addEventListener("load", check);
+  }
   function pickPanorama() {
     var maxCheck = 20, valid = [], pending = maxCheck;
     for (var i = 1; i <= maxCheck; i++) {
@@ -117,7 +123,7 @@
   function submit() {
     if (!state.prompting || state.busy || state.starting) return;
     state.busy = true; state.prompting = false;
-    setMsg("", false); setJoin(false, "Connecting...");
+    setMsg("", false); setJoin(false, "Join Server");
     L.respond($("pw").value);
   }
   function onPrompt(text, type) {
@@ -142,7 +148,6 @@
   }
   function startSession() {
     state.starting = true;
-    setMsg("Loading world...", false);
     document.body.classList.add("starting");
     if (window.mcSound) window.mcSound.fadeOut(800);
     var key = sessionKey();
@@ -185,7 +190,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    pickSplash(); pickPanorama(); tick(); setInterval(tick, 10000);
+    pickSplash(); pickPanorama(); fitLogo(); tick(); setInterval(tick, 10000);
     // Fallback in case GreeterReady never fires but the lightdm object exists.
     setTimeout(function () { if (!inited && window.lightdm) init(); }, 3000);
   });

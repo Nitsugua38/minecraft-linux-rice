@@ -2,6 +2,18 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Double-clicked from the file manager: there is no terminal to ask questions or type the sudo password
+if [[ ! -t 0 || ! -t 1 ]]; then
+    msg="Please run the installer from a terminal:\n\ncd \"$HERE\"\nsudo ./install.sh"
+    if command -v zenity >/dev/null; then
+        zenity --warning --title="Minecraft Linux Rice" --text="$msg" --width=420 2>/dev/null || true
+    elif command -v notify-send >/dev/null; then
+        notify-send "Minecraft Linux Rice" "$(echo -e "$msg")" || true
+    fi
+    echo -e "$msg" >&2
+    exit 1
+fi
+
 MODULES=(plymouth greeter splash desktop)
 
 ONLY=""
@@ -29,3 +41,13 @@ for m in "${MODULES[@]}"; do
         bash "$HERE/$m/installer.sh" "${ARGS[@]}"
     fi
 done
+
+if [[ -t 0 ]]; then
+    echo
+    read -rp "Done. A reboot is needed to see every change. Reboot now? [y/N] " answer
+    if [[ "$answer" =~ ^[Yy] ]]; then
+        systemctl reboot
+    else
+        echo "OK, reboot later to apply everything."
+    fi
+fi

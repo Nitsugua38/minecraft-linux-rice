@@ -65,7 +65,8 @@ body[data-screen="login"] #shade, body[data-screen="users"] #shade { display: no
 /* ---------- title screen ---------- */
 #logo-wrap { position: absolute; top: 30rem; left: 50%; transform: translateX(-50%); width: 274rem; }
 #logo { display: block; width: 100%; height: auto; image-rendering: pixelated; }
-#splash { position: absolute; right: -30rem; bottom: -8rem; white-space: nowrap; font-size: 12rem;
+#logo.jar { aspect-ratio: 256 / 44; object-fit: cover; object-position: top; }   /* crop the empty bottom of the game's logo */
+#splash { position: absolute; right: -30rem; bottom: -2rem; white-space: nowrap; font-size: 12rem;
   color: #ff0; text-shadow: 1rem 1rem 0 #3f3f00; transform: rotate(-20deg); pointer-events: none;
   animation: splash .5s ease-in-out infinite alternate; }
 @keyframes splash { from { transform: rotate(-20deg) scale(1); } to { transform: rotate(-20deg) scale(1.1); } }
