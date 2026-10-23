@@ -48,8 +48,7 @@ Requirements: Linux Mint with Cinnamon on X11, LightDM (Mint's default), and a c
 For legal reasons, Mojang's logos, textures, sounds and music are **not included** in this repo.
 
 
-**`sudo ./install.sh` offers to copy them for you** from your own Minecraft Java installation
-(`helper/asset_installer.sh`: it takes the newest version in `~/.minecraft` and the sounds the launcher already downloaded; nothing is fetched from the internet and files you added yourself are kept).
+**The install script offers to copy them for you** from your own Minecraft Java installation: it takes the newest version in `~/.minecraft` and the sounds the launcher already downloaded; nothing is fetched from the internet and files you added yourself are kept.
 
 
 You can also run it on its own: `helper/asset_installer.sh [--minecraft-dir DIR] [--jar FILE] [--force]`.
@@ -82,10 +81,10 @@ Every asset is optional: anything missing is simply not drawn or replaced by a p
 | **Already included** | | | | |
 | `font.ttf` | [greeter/assets/](greeter/assets/) | [Monocraft](https://github.com/IdreesInc/Monocraft) font (open source), also installed for the desktop and splash | | 📦 |
 | `progress-box.png`, `progress-bar.png` | [plymouth/assets/](plymouth/assets/) | boot screen loading bar | | 📦 |
+| `chest.png` | [desktop/assets/](desktop/assets/) | chest slot icon (other open windows) | a rendered chest icon | 📦 |
+| `world.png` (or `.jpg` / `.webp`) | [desktop/assets/](desktop/assets/) | desktop wallpaper | your own screenshot | 📦 |
 | **Not in the game files** | | | | |
 | `1/panorama_0.png` … `panorama_5.png` | [greeter/assets/](greeter/assets/) | rotating login background; add more sets in `2/`, `3/`… (one is picked at random) | only older versions ship them (recent ones render it live): use your own screenshots | ✋ |
-| `chest.png` | [desktop/assets/](desktop/assets/) | chest slot icon (other open windows) | a rendered chest icon | ✋ |
-| `world.png` (or `.jpg` / `.webp`) | [desktop/assets/](desktop/assets/) | desktop wallpaper | your own screenshot | ✋ |
 
 Texture paths are relative to `assets/minecraft/textures/` inside the version `.jar`; sounds come from the launcher's `assets/objects`.
 

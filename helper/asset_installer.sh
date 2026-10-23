@@ -230,5 +230,4 @@ else:
 print("[assets] %d file(s) copied, %d already there (kept; use --force to replace)" % (stats["copied"], stats["kept"]))
 if stats["missing"]:
     print("[assets] Not found in this version: " + ", ".join(sorted(set(stats["missing"]))))
-print("[assets] Still to add by hand (not in the game files): desktop/assets/chest.png, desktop/assets/world.png")
 PY
