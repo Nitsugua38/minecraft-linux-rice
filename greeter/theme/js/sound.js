@@ -3,6 +3,8 @@
   "use strict";
   var tracks = (window.MC_SOUND && window.MC_SOUND.tracks) || [];
   var VOL = 0.5, FADE_IN_MS = 2500, last = -1, music = null, fader = 0, waiting = false;
+  var KEY = "mc-music-volume";                               // set by the Options slider, kept between boots
+  try { var saved = parseFloat(localStorage.getItem(KEY)); if (saved >= 0 && saved <= 1) VOL = saved; } catch (e) {}
 
   function pick() {
     if (!tracks.length) return null;
@@ -47,6 +49,15 @@
     }
   }
 
-  window.mcSound = { fadeOut: function (ms) { fadeTo(0, ms || 400); } };
+  window.mcSound = {
+    fadeOut: function (ms) { fadeTo(0, ms || 400); },
+    volume: function () { return VOL; },
+    setVolume: function (v) {
+      VOL = Math.max(0, Math.min(1, v));
+      clearInterval(fader);
+      if (music) music.volume = VOL;
+      try { localStorage.setItem(KEY, String(VOL)); } catch (e) {}
+    }
+  };
   if (tracks.length) playNext();
 })();

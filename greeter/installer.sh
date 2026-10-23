@@ -6,6 +6,7 @@ NG_VERSION="${NODY_GREETER_VERSION:-1.6.2}"
 THEME_DIR="/usr/share/web-greeter/themes/${THEME_NAME}"
 CONF="/etc/lightdm/web-greeter.yml"
 DROPIN="/etc/lightdm/lightdm.conf.d/99-minecraft-greeter.conf"
+INFO_BIN="/usr/local/bin/mc-greeter-info"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ $EUID -ne 0 ]]; then
@@ -18,7 +19,7 @@ die()  { echo -e "\033[1;31m[greeter]\033[0m $*" >&2; exit 1; }
 
 uninstall() {
     say "Removing the Minecraft login screen..."
-    rm -f "${DROPIN}"
+    rm -f "${DROPIN}" "${INFO_BIN}"
     rm -rf "${THEME_DIR}"
     if [[ -f "${CONF}.bak-minecraft" ]]; then
         cp -f "${CONF}.bak-minecraft" "${CONF}"
@@ -79,6 +80,8 @@ with open(out, "w") as f:
     f.write("window.MC_SOUND = %s;\n" % json.dumps({"tracks": tracks}))
 print("[greeter] music tracks: %d" % len(tracks))
 PY
+install -m 755 "${HERE}/bin/mc-greeter-info" "${INFO_BIN}"   # computer info for the Realms screen + keyboard layouts
+"${INFO_BIN}" --once
 chmod -R a+rX "${THEME_DIR}"     # the 'lightdm' user must be able to read it
 
 
@@ -103,9 +106,11 @@ fi
 
 # ---------- 4. make LightDM use nody-greeter (drop-in overrides Mint's 70-linuxmint.conf) ----------
 mkdir -p /etc/lightdm/lightdm.conf.d
-printf '[Seat:*]\ngreeter-session=nody-greeter\n' > "${DROPIN}"
-if grep -Eq '^\s*greeter-session' /etc/lightdm/lightdm.conf 2>/dev/null; then
-    warn "/etc/lightdm/lightdm.conf sets greeter-session and takes priority over the drop-in. Remove or edit that line."
-fi
+printf '[Seat:*]\ngreeter-session=nody-greeter\ngreeter-setup-script=%s\n' "${INFO_BIN}" > "${DROPIN}"
+for key in greeter-session greeter-setup-script; do
+    if grep -Eq "^\s*${key}" /etc/lightdm/lightdm.conf 2>/dev/null; then
+        warn "/etc/lightdm/lightdm.conf sets ${key} and takes priority over the drop-in. Remove or edit that line."
+    fi
+done
 
 say "✅ Minecraft login screen installed!"

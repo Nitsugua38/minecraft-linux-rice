@@ -3,7 +3,8 @@
   var $ = function (id) { return document.getElementById(id); };
   var L = null, inited = false;
   var state = { user: null, sessionIdx: 0, prompting: false, busy: false, starting: false };
-  var SCREENS = ["title", "login", "users"];
+  var SCREENS = ["title", "login", "users", "realms", "options", "credits"];
+  var realmTimer = 0;
 
   function arr(x) { try { return Array.prototype.slice.call(x || []); } catch (e) { return []; } }
   function users() { return arr(L.users); }
@@ -17,6 +18,9 @@
     document.body.setAttribute("data-screen", name);
     if (name === "login") openLogin();
     if (name === "users") buildUsers();
+    clearInterval(realmTimer);
+    if (name === "realms") { renderRealm(); reloadInfo(); realmTimer = setInterval(reloadInfo, 5000); }
+    if (name === "options") setSlider(window.mcSound ? window.mcSound.volume() : 0.5, false);
   }
 
   /* ---------- title ---------- */
@@ -32,11 +36,8 @@
     refreshTitle();
   }
   function refreshTitle() {
-    var s = sessions();
     $("btn-login").textContent = state.user ? "Play as " + nameOf(state.user) : "Log In";
-    $("btn-session").textContent = "Session: " + (s[state.sessionIdx] ? s[state.sessionIdx].name : "Default");
     $("btn-switch").disabled = users().length < 2;
-    $("btn-restart").disabled = (L.can_restart === false);
     $("btn-quit").disabled = (L.can_shutdown === false);
     $("foot-l").textContent = "Minecraft Desktop" + (L.hostname ? " - " + L.hostname : "");
   }
@@ -54,7 +55,9 @@
   function fitLogo() {
     /* the game's title/minecraft.png is 4:1 with empty space under the logo (only its top 44/64 is drawn in game) */
     var img = $("logo");
-    function check() { if (img.naturalWidth && img.naturalWidth === 4 * img.naturalHeight) img.classList.add("jar"); }
+    function check() {
+      if (img.naturalWidth && img.naturalWidth === 4 * img.naturalHeight) { img.classList.add("jar"); $("credits-logo").classList.add("jar"); }
+    }
     if (img.complete) check(); else img.addEventListener("load", check);
   }
   function pickPanorama() {
@@ -157,6 +160,79 @@
     }, 850);
   }
 
+  /* ---------- realms: this computer's info, from js/greeter-info.js (rewritten every 5 s by mc-greeter-info) ---------- */
+  function reloadInfo() {
+    var old = $("info-script"); if (old) old.remove();
+    var s = document.createElement("script");
+    s.id = "info-script"; s.src = "js/greeter-info.js?t=" + Date.now();
+    s.onload = s.onerror = renderRealm;
+    document.body.appendChild(s);
+  }
+  function uptime(boot) {
+    var m = Math.max(0, Math.floor((Date.now() / 1000 - boot) / 60));
+    return (m >= 1440 ? Math.floor(m / 1440) + "d " : "") + Math.floor(m % 1440 / 60) + "h " + pad(m % 60) + "m";
+  }
+  function renderRealm() {
+    var i = window.MC_INFO || {}, host = i.host || (L && L.hostname) || "This computer", bits = [];
+    $("realm-icon").textContent = host.charAt(0).toUpperCase();
+    $("realm-name").textContent = host;
+    $("realm-status").textContent = i.ip ? "Online" : "Offline";
+    $("realm-status").className = i.ip ? "on" : "off";
+    $("realm-os").textContent = [i.os, i.kernel].filter(Boolean).join(" - ") || "Linux";
+    if (i.ip) bits.push("IP " + i.ip);
+    if (i.net) bits.push(i.net);
+    if (i.battery) bits.push("Battery " + i.battery.pct + "%" + (i.battery.status === "Charging" ? " (charging)" : ""));
+    if (i.boot) bits.push("Up " + uptime(i.boot));
+    $("realm-motd").textContent = bits.join(" - ") || "No information available";
+  }
+
+  /* ---------- options: music volume slider ---------- */
+  var sliding = false;
+  function setSlider(v, apply) {
+    v = Math.max(0, Math.min(1, v));
+    var pct = Math.round(v * 100);
+    $("vol-handle").style.left = "calc((100% - 8rem) * " + v + ")";
+    $("vol-label").textContent = "Music: " + (pct ? pct + "%" : "OFF");
+    if (apply !== false && window.mcSound) window.mcSound.setVolume(v);
+  }
+  function sliderValue(e) {
+    var r = $("vol-slider").getBoundingClientRect(), h = r.height * 8 / 20;   // handle is 8 of the 20 GUI px
+    return (e.clientX - r.left - h / 2) / (r.width - h);
+  }
+  function current() { return window.mcSound ? window.mcSound.volume() : 0.5; }
+
+  /* ---------- language button: cycles the keyboard layouts listed in /etc/default/keyboard (+ us) ---------- */
+  /* lightdm.layout always returns the layout from startup (liblightdm never updates it after set_layout),
+     so the theme keeps track of the current one itself */
+  var curLayout = null;
+  function showLayout() {
+    var l = curLayout, el = $("layout-msg");
+    $("lang-code").textContent = l ? String(l.short_description || l.name || "").split("\t")[0].toUpperCase() : "?";
+    el.textContent = "Keyboard: " + (l ? (l.description || l.short_description || l.name) : "default");
+    el.classList.add("shown");
+    clearTimeout(showLayout.t);
+    showLayout.t = setTimeout(function () { el.classList.remove("shown"); }, 2500);
+  }
+  function nextLayout() {
+    var all = arr(L.layouts), names = ((window.MC_INFO && window.MC_INFO.layouts) || ["us"]).slice();
+    var cur = curLayout && curLayout.name;
+    if (cur && names.indexOf(cur) < 0) names.unshift(cur);
+    var lay = null;
+    for (var k = 1; k <= names.length && !lay; k++) {          // next name that LightDM knows, skipping unknown ones
+      var next = names[(names.indexOf(cur) + k) % names.length];
+      lay = all.filter(function (l) { return l.name === next; })[0] || null;
+    }
+    if (lay && lay.name !== cur) {
+      try { L.layout = lay; curLayout = lay; } catch (e) {}
+    }
+    showLayout();
+  }
+  function iconFallback(id) {
+    var img = $(id);
+    function bad() { img.remove(); }
+    if (img.complete && !img.naturalWidth) bad(); else img.addEventListener("error", bad);
+  }
+
   /* ---------- wiring ---------- */
   function init() {
     if (inited) return; inited = true;
@@ -171,11 +247,26 @@
 
     $("btn-login").addEventListener("click", function () { show("login"); });
     $("btn-switch").addEventListener("click", function () { show("users"); });
-    $("btn-session").addEventListener("click", function () {
-      var s = sessions(); if (!s.length) return;
-      state.sessionIdx = (state.sessionIdx + 1) % s.length; refreshTitle();
+    $("btn-realms").addEventListener("click", function () { show("realms"); });
+    $("btn-realms-back").addEventListener("click", function () { show("title"); });
+    $("btn-options").addEventListener("click", function () { show("options"); });
+    $("btn-options-done").addEventListener("click", function () { show("title"); });
+    $("btn-credits").addEventListener("click", function () { show("credits"); });
+    $("btn-credits-done").addEventListener("click", function () { show("title"); });
+    $("credits-roll").addEventListener("animationend", function () {   // credits played once: back to the title
+      if (document.body.getAttribute("data-screen") === "credits") show("title");
     });
-    $("btn-restart").addEventListener("click", function () { L.restart(); });
+    $("btn-lang").addEventListener("click", nextLayout);
+    $("btn-lang").addEventListener("mouseenter", showLayout);
+    $("vol-slider").addEventListener("mousedown", function (e) { sliding = true; setSlider(sliderValue(e)); });
+    document.addEventListener("mousemove", function (e) { if (sliding) setSlider(sliderValue(e)); });
+    document.addEventListener("mouseup", function () { sliding = false; });
+    $("vol-slider").addEventListener("keydown", function (e) {
+      if (e.key === "ArrowLeft") setSlider(current() - 0.05);
+      else if (e.key === "ArrowRight") setSlider(current() + 0.05);
+    });
+    curLayout = L.layout || null;
+    showLayout(); $("layout-msg").classList.remove("shown");
     $("btn-quit").addEventListener("click", function () { L.shutdown(); });
     $("btn-join").addEventListener("click", submit);
     $("btn-cancel").addEventListener("click", cancelLogin);
@@ -184,13 +275,13 @@
     document.addEventListener("keydown", function (e) {
       var s = document.body.getAttribute("data-screen");
       if (e.key === "Escape" && s === "login") cancelLogin();
-      else if (e.key === "Escape" && s === "users") show("title");
+      else if (e.key === "Escape" && (s === "users" || s === "realms" || s === "options" || s === "credits")) show("title");
       else if (e.key === "Enter" && s === "title") show("login");
     });
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    pickSplash(); pickPanorama(); fitLogo(); tick(); setInterval(tick, 10000);
+    pickSplash(); pickPanorama(); fitLogo(); iconFallback("lang-icon"); iconFallback("credits-icon"); tick(); setInterval(tick, 10000);
     // Fallback in case GreeterReady never fires but the lightdm object exists.
     setTimeout(function () { if (!inited && window.lightdm) init(); }, 3000);
   });

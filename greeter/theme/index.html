@@ -7,7 +7,7 @@
 </head>
 <body data-screen="title">
 
-<!-- rotating panorama (CSS 3D cube) -->
+<!-- rotating panorama -->
 <div id="scene"><div id="pitch"><div id="cube">
   <div class="face f0"></div><div class="face f1"></div><div class="face f2"></div>
   <div class="face f3"></div><div class="face f4"></div><div class="face f5"></div>
@@ -23,19 +23,22 @@
   </div>
   <div id="menu">
     <button class="mc-btn" id="btn-login">Play</button>
-    <button class="mc-btn" id="btn-switch">Switch Player</button>
-    <button class="mc-btn" id="btn-session">Session</button>
+    <button class="mc-btn" id="btn-switch">Multiplayer</button>
+    <button class="mc-btn" id="btn-realms">Minecraft Realms</button>
     <div class="gap"></div>
     <div class="row">
-      <button class="mc-btn" id="btn-restart">Restart</button>
+      <button class="mc-btn sq" id="btn-lang"><img id="lang-icon" src="assets/language.png" alt=""><span id="lang-code"></span></button>
+      <button class="mc-btn" id="btn-options">Options...</button>
       <button class="mc-btn" id="btn-quit">Quit Game</button>
+      <button class="mc-btn sq right" id="btn-credits"><img id="credits-icon" src="assets/accessibility.png" alt=""><span>?</span></button>
+      <div id="layout-msg"></div>
     </div>
   </div>
   <div id="foot-l">Minecraft Desktop</div>
   <div id="foot-r"></div>
 </section>
 
-<!-- PASSWORD SCREEN ("Direct Connection" style) -->
+<!-- PASSWORD SCREEN -->
 <section id="login" class="screen">
   <h1>Direct Connection</h1>
   <div id="login-form">
@@ -49,13 +52,65 @@
   </div>
 </section>
 
-<!-- USER LIST ("Select Server" style) -->
+<!-- USER LIST -->
 <section id="users" class="screen">
   <h1>Select Player</h1>
   <div id="user-list"></div>
   <div id="users-buttons"><button class="mc-btn" id="btn-users-cancel">Cancel</button></div>
 </section>
 
+<!-- REALMS -->
+<section id="realms" class="screen">
+  <h1>Minecraft Realms</h1>
+  <div id="realm-list">
+    <div class="realm">
+      <div class="avatar" id="realm-icon"></div>
+      <div class="realm-text">
+        <div id="realm-head"><span id="realm-name"></span><span id="realm-status"></span></div>
+        <div id="realm-os"></div>
+        <div id="realm-motd"></div>
+      </div>
+    </div>
+  </div>
+  <div class="bottom-buttons"><button class="mc-btn" id="btn-realms-back">Back</button></div>
+</section>
+
+<!-- OPTIONS -->
+<section id="options" class="screen">
+  <h1>Options</h1>
+  <div id="options-form">
+    <div class="mc-slider" id="vol-slider" tabindex="0"><div id="vol-handle"></div><div id="vol-label"></div></div>
+  </div>
+  <div class="bottom-buttons"><button class="mc-btn" id="btn-options-done">Done</button></div>
+</section>
+
+<!-- CREDITS -->
+<section id="credits" class="screen">
+  <div id="credits-view">
+    <div id="credits-roll">
+      <img id="credits-logo" src="assets/logo.png" alt="Minecraft">
+      <p class="hd">Minecraft Linux Rice</p>
+      <p>A Minecraft-style desktop for Linux Mint</p>
+      <p class="hd">Project made by</p>
+      <p>nitsu.xyz</p>
+      <p class="hd">Built with</p>
+      <p>nody-greeter</p>
+      <p>Monocraft font by IdreesInc</p>
+      <p>Plymouth - LightDM - Cinnamon</p>
+      <p>GTK - cairo - Pango</p>
+      <p class="hd">Textures, sounds and music</p>
+      <p>Mojang Studios</p>
+      <p>copied from your own copy of the game</p>
+      <p class="hd">Disclaimer</p>
+      <p>Not affiliated with, endorsed by,</p>
+      <p>or associated with Mojang Studios or Microsoft.</p>
+      <p class="hd">Thanks for playing!</p>
+    </div>
+  </div>
+  <div class="bottom-buttons"><button class="mc-btn" id="btn-credits-done">Done</button></div>
+</section>
+
+<script src="js/greeter-info.js"></script>
 <script src="js/sound-config.js"></script>
 <script src="js/sound.js"></script>
 <script src="js/splashes.js"></script>

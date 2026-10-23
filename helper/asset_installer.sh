@@ -75,6 +75,8 @@ TEXTURES = {
     "splash/assets/dirt.png": T + "block/dirt.png",
     "greeter/assets/dirt.png": T + "block/dirt.png",
     "greeter/assets/logo.png": T + "gui/title/minecraft.png",
+    "greeter/assets/language.png": T + "gui/sprites/icon/language.png",
+    "greeter/assets/accessibility.png": T + "gui/sprites/icon/accessibility.png",
 }
 for i in range(64):
     TEXTURES["desktop/assets/clock_%02d.png" % i] = T + "item/clock_%02d.png" % i

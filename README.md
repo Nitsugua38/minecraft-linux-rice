@@ -62,6 +62,8 @@ Every asset is optional: anything missing is simply not drawn or replaced by a p
 | **Boot & login** | | | | |
 | `logo.png` | [plymouth/assets/](plymouth/assets/) | Mojang Studios logo on the boot screen | `gui/title/mojangstudios.png` (both halves joined) | ✅ |
 | `logo.png` | [greeter/assets/](greeter/assets/) | "Minecraft" logo on the login screen | `gui/title/minecraft.png` | ✅ |
+| `language.png` | [greeter/assets/](greeter/assets/) | icon of the keyboard-layout button | `gui/sprites/icon/language.png` | ✅ |
+| `accessibility.png` | [greeter/assets/](greeter/assets/) | icon of the credits button | `gui/sprites/icon/accessibility.png` | ✅ |
 | `dirt.png` | [greeter/assets/](greeter/assets/), [splash/assets/](splash/assets/) | dirt background (login, "Generating world", "Saving world") | `block/dirt.png` | ✅ |
 | **Desktop textures** | | | | |
 | `hotbar.png`, `hotbar_selection.png` | [desktop/assets/](desktop/assets/) | the hotbar and its selection frame | `gui/sprites/hud/` | ✅ |

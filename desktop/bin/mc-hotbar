@@ -1965,7 +1965,7 @@ class Hotbar(Gtk.Window):
         layout = make_layout(cr, self._minute or time.strftime("%H:%M"), FONT_EM * s * CLOCK_K)
         tw, th = layout.get_pixel_size()
         x, y = sx - 5 * s - tw, hy + (22 * s - th) // 2
-        cr.set_source_rgb(0.247, 0.165, 0.0)                     # vanilla gold text shadow (#3F2A00)
+        cr.set_source_rgb(0.35, 0.35, 0.35)                     # vanilla gold text shadow (#3F2A00)
         cr.move_to(x + s, y + s); PangoCairo.show_layout(cr, layout)
         cr.set_source_rgb(1.0, 0.667, 0.0)                       # vanilla gold (#FFAA00)
         for dx in (0, s):                                        # vanilla bold: same glyphs again 1 GUI px to the right
@@ -1987,9 +1987,10 @@ class Hotbar(Gtk.Window):
                 continue
             x, y = L + s * (3 + 20 * i), hy + s * 3              # items are 16x16 GUI px, 3 px in from the slot corner
             pw, ph = surf.get_width(), surf.get_height()
+            size = 14 if i == CHEST else 16                      # the chest is drawn 2 GUI px smaller, centred
             cr.save()
-            cr.translate(x, y)
-            cr.scale(16 * s / pw, 16 * s / ph)
+            cr.translate(x + (16 - size) * s / 2, y + (16 - size) * s / 2)
+            cr.scale(size * s / pw, size * s / ph)
             cr.set_source_surface(surf, 0, 0)
             cr.paint()
             cr.restore()

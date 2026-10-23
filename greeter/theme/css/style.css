@@ -43,8 +43,8 @@ body.starting { opacity: 0; }
 /* dirt backdrop for the sub-screens */
 #dirt { position: fixed; inset: 0; display: none; background: #2d1f14 url("../assets/dirt.png");
         background-size: 32rem 32rem; image-rendering: pixelated; filter: brightness(.45); }
-body[data-screen="login"] #dirt, body[data-screen="users"] #dirt { display: block; }
-body[data-screen="login"] #shade, body[data-screen="users"] #shade { display: none; }
+body:not([data-screen="title"]) #dirt { display: block; }
+body:not([data-screen="title"]) #shade { display: none; }
 
 .screen { position: fixed; inset: 0; display: none; }
 .screen.active { display: block; }
@@ -74,21 +74,31 @@ body[data-screen="login"] #shade, body[data-screen="users"] #shade { display: no
         display: flex; flex-direction: column; gap: 4rem; }
 #menu .gap { height: 8rem; }
 #menu .row { display: flex; gap: 4rem; }
+#menu .row { position: relative; }
 #menu .row .mc-btn { flex: 1; width: auto; }
+#menu .row .mc-btn.sq { position: absolute; left: -24rem; top: 0; width: 20rem; flex: none;   /* language button, like the game */
+  display: grid; place-items: center; }
+#menu .row .mc-btn.sq.right { left: auto; right: -24rem; }   /* accessibility (credits) button, right of Quit Game */
+#lang-icon, #credits-icon { width: 15rem; height: 15rem; image-rendering: pixelated; }
+.sq img + span { display: none; }                          /* the text only shows without the icon texture */
+#layout-msg { position: absolute; top: 24rem; left: -24rem; white-space: nowrap; color: #a0a0a0;
+  text-shadow: 1rem 1rem 0 #3f3f3f; opacity: 0; transition: opacity .3s; pointer-events: none; }
+#layout-msg.shown { opacity: 1; }
 #foot-l, #foot-r { position: absolute; bottom: 3rem; text-shadow: 1rem 1rem 0 #3f3f3f; }
 #foot-l { left: 4rem; } #foot-r { right: 4rem; }
 
 /* ---------- password screen ---------- */
 h1 { margin: 0; font-weight: normal; font-size: 8rem; text-shadow: 1rem 1rem 0 #3f3f3f; }
-#login h1, #users h1 { position: absolute; top: 20rem; width: 100%; text-align: center; }
-#login-form { position: absolute; top: 60rem; left: 50%; transform: translateX(-50%); width: 200rem; }
+.screen h1 { position: absolute; top: 20rem; width: 100%; text-align: center; }
+#login-form { position: absolute; top: 80rem; left: 50%; transform: translateX(-50%); width: 200rem; }   /* field centred between title and buttons */
 #login-label { color: #a0a0a0; margin-bottom: 4rem; }
 #pw { width: 100%; height: 20rem; padding: 0 4rem; font: inherit; color: #e0e0e0; background: #000;
       border: 1rem solid #a0a0a0; outline: none; user-select: text; -webkit-user-select: text; }
 #pw:focus { border-color: #fff; }
 #login-msg { min-height: 16rem; margin: 8rem 0 4rem; text-align: center; color: #aaa; line-height: 1.3; }
 #login-msg.error { color: #ff5555; }
-#login-buttons { display: flex; flex-direction: column; gap: 4rem; }
+#login-buttons { position: absolute; top: 96rem; left: 0; right: 0;                /* = 176rem from the top, like the game */
+                  display: flex; flex-direction: column; gap: 4rem; }
 
 /* ---------- user list ---------- */
 #user-list { position: absolute; top: 36rem; bottom: 64rem; left: 50%; transform: translateX(-50%);
@@ -102,3 +112,36 @@ h1 { margin: 0; font-weight: normal; font-size: 8rem; text-shadow: 1rem 1rem 0 #
 .avatar img { width: 100%; height: 100%; image-rendering: pixelated; }
 .user-name { display: block; } .user-sub { display: block; color: #808080; }
 #users-buttons { position: absolute; bottom: 20rem; left: 50%; transform: translateX(-50%); width: 200rem; }
+
+/* ---------- realms (this computer) ---------- */
+#realm-list { position: absolute; top: 36rem; left: 50%; transform: translateX(-50%); width: 260rem; padding: 2rem 4rem;
+  background: rgba(0,0,0,.5); border-top: 2rem solid #000; border-bottom: 2rem solid #000; }
+.realm { display: flex; align-items: center; gap: 8rem; height: 36rem; }
+.realm-text { flex: 1; min-width: 0; }
+#realm-head { display: flex; justify-content: space-between; }
+#realm-status.on { color: #55ff55; } #realm-status.off { color: #ff5555; }
+#realm-status::before { content: ""; display: inline-block; width: 4rem; height: 4rem; margin: 0 3rem 1rem 0; background: currentColor; }
+#realm-os, #realm-motd { color: #808080; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bottom-buttons { position: absolute; bottom: 20rem; left: 50%; transform: translateX(-50%); width: 200rem; }
+
+/* ---------- options ---------- */
+#options-form { position: absolute; top: 60rem; left: 50%; transform: translateX(-50%); width: 200rem; }
+.mc-slider { position: relative; width: 200rem; height: 20rem; cursor: pointer; outline: none; background: #2b2b2b;
+  border: 1rem solid #000; box-shadow: inset 1rem 1rem 0 #1a1a1a, inset -1rem -1rem 0 #3a3a3a; }
+#vol-handle { position: absolute; top: -1rem; width: 8rem; height: 20rem; background: #6f6f6f; border: 1rem solid #000;
+  box-shadow: inset 1rem 1rem 0 #ababab, inset -1rem -2rem 0 #3d3d3d; }
+.mc-slider:hover #vol-handle, .mc-slider:focus-visible #vol-handle { background: #7886b8;
+  box-shadow: inset 1rem 1rem 0 #b4bde6, inset -1rem -2rem 0 #3c466e; }
+#vol-label { position: absolute; inset: 0; display: grid; place-items: center; color: #e0e0e0;
+  text-shadow: 1rem 1rem 0 #383838; pointer-events: none; }
+.mc-slider:hover #vol-label, .mc-slider:focus-visible #vol-label { color: #ffffa0; }
+
+/* ---------- credits ---------- */
+#credits-view { position: absolute; top: 0; bottom: 48rem; left: 0; right: 0; overflow: hidden;
+  -webkit-mask-image: linear-gradient(transparent, #000 15%, #000 85%, transparent); }
+#credits-roll { position: absolute; top: 100%; width: 100%; text-align: center; animation: roll 40s linear forwards; }
+#credits-logo { display: block; width: 200rem; margin: 0 auto 16rem; image-rendering: pixelated; }
+#credits-logo.jar { aspect-ratio: 256 / 44; object-fit: cover; object-position: top; }
+#credits-roll p { margin: 0 0 2rem; color: #fff; text-shadow: 1rem 1rem 0 #3f3f3f; }
+#credits-roll p.hd { margin-top: 14rem; color: #ffff55; text-shadow: 1rem 1rem 0 #3f3f15; }
+@keyframes roll { from { transform: translateY(0); } to { transform: translateY(calc(-100% - 230rem)); } }
