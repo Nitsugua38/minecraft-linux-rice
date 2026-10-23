@@ -39,7 +39,7 @@ CLOCK_K = 1.0                      # offhand clock text size as a fraction of th
 DAY_K = 0.85                       # XP-level number (day of the month) size as a fraction of the normal text size
 DEFAULT_SCALE = 3                  # GUI scale (1080p game default would be 4; 3 keeps it a bit smaller)
 DEFAULT_STRIP = 0.30               # opacity of the dark strip behind the HUD while a program is open
-DEFAULT_SHOW = {"battery": "auto", "wifi": "auto", "volume": True, "clock": True, "updates": True, "toasts": True}
+DEFAULT_SHOW = {"battery": "auto", "wifi": "auto", "volume": True, "clock": True, "storage": True, "toasts": True}
 
 # First installed app of each group becomes a default slot.
 DEFAULT_CANDIDATES = [
@@ -52,7 +52,7 @@ DEFAULT_CANDIDATES = [
 PANEL_POWER = [["cinnamon-settings", "power"], ["gnome-control-center", "power"], ["xfce4-power-manager-settings"], ["mate-power-preferences"]]
 PANEL_NETWORK = [["cinnamon-settings", "network"], ["gnome-control-center", "wifi"], ["nm-connection-editor"]]
 PANEL_SOUND = [["cinnamon-settings", "sound"], ["gnome-control-center", "sound"], ["pavucontrol"]]
-PANEL_UPDATES = [["mintupdate"], ["update-manager"], ["gnome-software", "--mode=updates"], ["software-properties-gtk"]]
+PANEL_STORAGE = [["baobab"], ["gnome-disks"], ["nemo", "computer:///"], ["xdg-open", os.path.expanduser("~")]]
 
 
 # ----------------------------------------------------------------- config
@@ -140,7 +140,7 @@ def load_sprites(assets):
 
 # Minecraft HUD sprites
 HUD_FILES = ["heart_container", "heart_full", "heart_half", "armor_empty", "armor_half", "armor_full",
-             "food_empty", "food_full", "xp_bg", "xp_fill", "chest", "hotbar_offhand_left"]
+             "food_empty", "food_full", "food_half", "xp_bg", "xp_fill", "chest", "hotbar_offhand_left"]
 
 
 def rgb(v):
@@ -1427,7 +1427,7 @@ class Hotbar(Gtk.Window):
         self.wifi = None               # percent or None
         self.ssid = None
         self.vol, self.muted = None, False
-        self.updates = None            # None = not checked yet
+        self.storage = None            # (free bytes, total bytes) of the home filesystem; None = unknown
         self.dragging = False
         self._vol_sent = 0.0
         self._scroll_acc = 0.0
@@ -1723,7 +1723,7 @@ class Hotbar(Gtk.Window):
     # ---- system monitors
     def start_monitors(self):
         if self.demo:
-            self.battery, self.wifi, self.ssid, self.vol, self.updates = (73.0, "Charging"), 60, "Demo-WiFi", 65, 12
+            self.battery, self.wifi, self.ssid, self.vol, self.storage = (73.0, "Charging"), 60, "Demo-WiFi", 65, (210e9, 500e9)
             self.set_battery(self.battery)
         else:
             self.poll_battery(); self.poll_wifi(); self.poll_volume()
@@ -1731,8 +1731,8 @@ class Hotbar(Gtk.Window):
             GLib.timeout_add_seconds(4, self.poll_wifi)
             GLib.timeout_add_seconds(2, self.poll_volume)
             GLib.timeout_add_seconds(20, self.poll_ssid)
-            GLib.timeout_add_seconds(5, self.poll_updates_once)
-            GLib.timeout_add_seconds(600, self.poll_updates)
+            self.poll_storage()
+            GLib.timeout_add_seconds(60, self.poll_storage)
         self._minute = time.strftime("%H:%M")
         GLib.timeout_add_seconds(1, self.tick_clock)
 
@@ -1807,20 +1807,16 @@ class Hotbar(Gtk.Window):
         run_async(["pactl", "get-sink-volume", "@DEFAULT_SINK@"], got_vol)
         return True
 
-    def poll_updates(self):
-        def got(out):
-            if out is None:
-                return
-            n = len(re.findall(r"\[upgradable from:", out))
-            if n != self.updates:
-                self.updates = n
-                self.queue_draw(); self.refresh_tip()
-        run_async(["apt", "list", "--upgradable"], got)
+    def poll_storage(self):
+        try:
+            st = os.statvfs(os.path.expanduser("~"))
+            value = (st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize)
+        except OSError:
+            value = None
+        if value != self.storage:
+            self.storage = value
+            self.queue_draw(); self.refresh_tip()
         return True
-
-    def poll_updates_once(self):
-        self.poll_updates()
-        return False
 
     # ---- volume
     def push_volume(self, force=False):
@@ -1879,7 +1875,7 @@ class Hotbar(Gtk.Window):
             out.append(("battery", L, hy, 81 * hs, 9 * hs))
         if self.shown("wifi"):
             out.append(("wifi", L, ay, 81 * hs, 9 * hs))
-        if self.shown("updates"):
+        if self.shown("storage"):
             out.append(("hunger", L + BAR_W * s - 81 * hs, hy, 81 * hs, 9 * hs))
         return out
 
@@ -2036,13 +2032,20 @@ class Hotbar(Gtk.Window):
             for i in range(10):
                 name = "armor_full" if halves >= 2 * i + 2 else ("armor_half" if halves >= 2 * i + 1 else "armor_empty")
                 put(name, L + 8 * i * hs, ay)
-        if self.shown("updates"):                                # hunger = updates: full when up to date, half when pending
-            n_full = 10 if not self.updates else 5
-            for i in range(10):                                  # icon 0 = leftmost; full ones first, empty ones to their right
-                x = L + BAR_W * s - 81 * hs + 8 * i * hs
+        if self.shown("storage") and self.storage is not None:  # hunger = free disk space, 1 drumstick = 10 %
+            free, total = self.storage
+            pct = 100.0 * free / total if total else 0.0
+            halves = int(round(pct / 5.0))
+            if pct > 0:
+                halves = max(1, halves)
+            half = "food_half" if "food_half" in hud else "food_full"
+            for i in range(10):                                  # like the game: icon 0 is the rightmost, it empties last
+                x = L + BAR_W * s - 9 * hs - 8 * i * hs
                 put("food_empty", x, hy)                         # empty icon underneath = outline of the full one
-                if i < n_full:
+                if halves >= 2 * i + 2:
                     put("food_full", x, hy)
+                elif halves >= 2 * i + 1:
+                    put(half, x, hy)
         if self.shown("volume") and "xp_bg" in hud and "xp_fill" in hud:   # XP bar = volume
             frac = (self.vol or 0) / 100.0
             xy = (H - 29) * s
@@ -2178,9 +2181,10 @@ class Hotbar(Gtk.Window):
                 return "Wi-Fi: not connected"
             return "Wi-Fi: %s (%d%%)" % (self.ssid, self.wifi) if self.ssid else "Wi-Fi: %d%%" % self.wifi
         if kind == "hunger":
-            if self.updates is None:
-                return "Updates: checking..."
-            return "Up to date" if self.updates == 0 else "%d update%s available" % (self.updates, "" if self.updates == 1 else "s")
+            if self.storage is None:
+                return "Storage: unavailable"
+            free, total = self.storage
+            return "Storage: %.0f GB free of %.0f GB (%d%%)" % (free / 1e9, total / 1e9, round(100.0 * free / total) if total else 0)
         if kind == "xp":
             if self.vol is None:
                 return "Volume: unavailable"
@@ -2247,9 +2251,7 @@ class Hotbar(Gtk.Window):
             elif kind == "wifi":
                 open_first(PANEL_NETWORK)
             elif kind == "hunger":
-                open_first(PANEL_UPDATES)
-                if not self.demo:
-                    GLib.timeout_add_seconds(90, self.poll_updates_once)   # re-check after you had time to install
+                open_first(PANEL_STORAGE)
             elif kind in ("clock", "day"):
                 rx, ry, rw, _rh = self.key_rect(key)
                 win_x, win_y = self.origin()
@@ -2399,7 +2401,7 @@ def main():
     ap.add_argument("--assets", default=os.environ.get("MC_DESKTOP_ASSETS", DEFAULT_ASSETS))
     ap.add_argument("--scale", type=int, help="GUI scale, overrides the config file")
     ap.add_argument("--no-struts", action="store_true", help="do not reserve screen space (windows may cover the hotbar)")
-    ap.add_argument("--demo", action="store_true", help="show made-up battery / wifi / volume / updates values")
+    ap.add_argument("--demo", action="store_true", help="show made-up battery / wifi / volume / storage values")
     ap.add_argument("--inventory", action="store_true", help="open / close the inventory of a running hotbar")
     ap.add_argument("--render-png", metavar="FILE", help="write one frame to FILE and exit")
     ap.add_argument("--size", default="1920x1080", help="with --render-png: screen width x height")

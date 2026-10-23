@@ -42,6 +42,19 @@ mkdir -p "${THEME_DIR}"
 cp -f "${HERE}/theme/"* "${THEME_DIR}/"
 cp -f "${HERE}/assets/"*.png "${THEME_DIR}/"
 
+# Dirt for the shutdown screen
+DIRT="${HERE}/assets/dirt.png"
+[[ -f "$DIRT" ]] || DIRT="${HERE}/../splash/assets/dirt.png"
+if [[ -f "$DIRT" ]]; then
+    python3 - "$DIRT" "${THEME_DIR}/dirt.png" 2>/dev/null <<'PY' || cp -f "$DIRT" "${THEME_DIR}/dirt.png"
+import sys, gi
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf
+pb = GdkPixbuf.Pixbuf.new_from_file(sys.argv[1])
+pb.scale_simple(pb.get_width() * 4, pb.get_height() * 4, GdkPixbuf.InterpType.NEAREST).savev(sys.argv[2], "png", [], [])
+PY
+fi
+
 for f in logo.png progress-box.png progress-bar.png minecraft.plymouth minecraft.script; do
     [[ -f "${THEME_DIR}/${f}" ]] || { warn "Missing ${f}, aborting."; exit 1; }
 done

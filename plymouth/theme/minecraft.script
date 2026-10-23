@@ -8,7 +8,12 @@ logo.y_ratio = 0.5;
 logo.max_width_ratio = 0.5;
 box.y_ratio = 0.8;
 bar.padding = 8;
+saving.text = "Saving world";
+saving.font = "Monocraft";             # falls back to the default font if missing
 # --------------------------------------------------------
+
+mode = Plymouth.GetMode();
+shutdown = (mode == "shutdown" || mode == "reboot");
 
 Window.SetBackgroundTopColor(bg.r, bg.g, bg.b);
 Window.SetBackgroundBottomColor(bg.r, bg.g, bg.b);
@@ -50,6 +55,7 @@ bar.sprite.SetY(box.y + bar.padding);
 bar.sprite.SetZ(20);
 
 fun set_bar(fraction) {
+    if (shutdown) return;
     if (fraction > 1) fraction = 1;
     local.w = Math.Int(bar.max_w * fraction);
     if (local.w < 1) {
@@ -108,3 +114,43 @@ fun message_callback(text) {
     message.sprite.SetZ(30);
 }
 Plymouth.SetMessageFunction(message_callback);
+
+
+# ---- shutdown / reboot: "Saving world" screen ----
+if (shutdown) {
+    logo.sprite.SetOpacity(0);
+    box.sprite.SetOpacity(0);
+    bar.sprite.SetOpacity(0);
+
+    gui = scr.h / 540;                                    # 1 GUI px (2 px at 1080p), same as mc-splash
+    cell = Math.Int(2 * gui + 0.5);                       # one dirt texel
+    if (cell < 1) cell = 1;
+
+    dirt.image = Image("dirt.png");
+    if (dirt.image) {
+        Window.SetBackgroundTopColor(0, 0, 0);            # 25% dirt over black = the game's darkened dirt
+        Window.SetBackgroundBottomColor(0, 0, 0);
+        dirt.tile = 16 * cell;
+        if (dirt.image.GetWidth() != dirt.tile)
+            dirt.image = dirt.image.Scale(dirt.tile, dirt.tile);
+        dirt.sprite = Sprite(dirt.image.Tile(scr.w, scr.h));
+        dirt.sprite.SetPosition(0, 0, 0);
+        dirt.sprite.SetOpacity(0.25);
+    } else {
+        Window.SetBackgroundTopColor(0.125, 0.09, 0.065);   # plain dark dirt colour
+        Window.SetBackgroundBottomColor(0.125, 0.09, 0.065);
+    }
+
+    saving.px = Math.Int(9 * gui + 0.5) + 12;            # Monocraft: 9 GUI px per em, +12 px
+    saving.sh = Math.Int(gui + 0.5);
+    if (saving.sh < 1) saving.sh = 1;
+    saving.fd = saving.font + " " + saving.px + "px";
+    saving.img = Image.Text(saving.text, 1, 1, 1, 1, saving.fd);
+    saving.shadow_img = Image.Text(saving.text, 0.247, 0.247, 0.247, 1, saving.fd);
+    saving.x = Math.Int(scr.w / 2 - saving.img.GetWidth() / 2);
+    saving.y = Math.Int(100 * gui);                      # upper part of the screen
+    saving.shadow = Sprite(saving.shadow_img);
+    saving.shadow.SetPosition(saving.x + saving.sh, saving.y + saving.sh, 40);
+    saving.sprite = Sprite(saving.img);
+    saving.sprite.SetPosition(saving.x, saving.y, 41);
+}
