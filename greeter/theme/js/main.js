@@ -3,7 +3,7 @@
   var $ = function (id) { return document.getElementById(id); };
   var L = null, inited = false;
   var state = { user: null, sessionIdx: 0, prompting: false, busy: false, starting: false };
-  var SCREENS = ["title", "login", "users", "realms", "options", "credits"];
+  var SCREENS = ["title", "login", "bed", "users", "realms", "options", "credits"];
   var realmTimer = 0;
 
   function arr(x) { try { return Array.prototype.slice.call(x || []); } catch (e) { return []; } }
@@ -17,6 +17,7 @@
     SCREENS.forEach(function (s) { $(s).classList.toggle("active", s === name); });
     document.body.setAttribute("data-screen", name);
     if (name === "login") openLogin();
+    if (name === "bed") openBed();
     if (name === "users") buildUsers();
     clearInterval(realmTimer);
     if (name === "realms") { renderRealm(); reloadInfo(); realmTimer = setInterval(reloadInfo, 5000); }
@@ -103,9 +104,23 @@
     });
   }
 
-  /* ---------- login ---------- */
-  function setMsg(text, isError) { var m = $("login-msg"); m.textContent = text || ""; m.className = isError ? "error" : ""; }
-  function setJoin(enabled, text) { var b = $("btn-join"); b.disabled = !enabled; b.textContent = text; }
+  /* ---------- login (the password screen, or the chat bar when in bed) ---------- */
+  function inBed() { return document.body.getAttribute("data-screen") === "bed"; }
+  function field() { return inBed() ? $("chat") : $("pw"); }
+  function chatLine(text, isError) {
+    var box = $("chat-lines"), line = document.createElement("div");
+    line.textContent = text; if (isError) line.className = "error";
+    box.appendChild(line);
+    while (box.children.length > 10) box.removeChild(box.firstChild);
+  }
+  function setMsg(text, isError) {
+    if (inBed()) { if (text) chatLine(text, isError); return; }
+    var m = $("login-msg"); m.textContent = text || ""; m.className = isError ? "error" : "";
+  }
+  function setJoin(enabled, text) {
+    if (inBed()) { $("btn-leave-bed").disabled = !enabled; return; }
+    var b = $("btn-join"); b.disabled = !enabled; b.textContent = text;
+  }
   function beginAuth() {
     state.prompting = false; state.busy = false;
     try { L.cancel_authentication(); } catch (e) {}
@@ -119,6 +134,12 @@
     beginAuth();
     setTimeout(function () { $("pw").focus(); }, 50);
   }
+  function openBed() {
+    $("chat").value = ""; $("chat-lines").innerHTML = "";
+    setJoin(false);
+    beginAuth();
+    setTimeout(function () { $("chat").focus(); }, 50);
+  }
   function cancelLogin() {
     try { L.cancel_authentication(); } catch (e) {}
     state.prompting = false; state.busy = false; show("title");
@@ -127,14 +148,15 @@
     if (!state.prompting || state.busy || state.starting) return;
     state.busy = true; state.prompting = false;
     setMsg("", false); setJoin(false, "Join Server");
-    L.respond($("pw").value);
+    L.respond(field().value);
   }
   function onPrompt(text, type) {
     var isText = (type === 0 || type === "0" || type === "text");
-    var pw = $("pw");
+    var pw = field();
     state.prompting = true; state.busy = false;
     pw.type = isText ? "text" : "password"; pw.value = ""; pw.disabled = false;
-    if (isText) $("login-label").textContent = String(text || "").replace(/[:\s]+$/, "");
+    if (isText && inBed()) chatLine(String(text || "").replace(/[:\s]+$/, ""), false);
+    else if (isText) $("login-label").textContent = String(text || "").replace(/[:\s]+$/, "");
     setJoin(true, "Join Server"); pw.focus();
   }
   function onMessage(text, type) {
@@ -144,8 +166,8 @@
   function onAuthComplete() {
     state.busy = false;
     if (L.is_authenticated) { startSession(); return; }
-    $("pw").value = "";
-    setMsg("Failed to connect: Invalid password", true);
+    field().value = "";
+    setMsg(inBed() ? "You can't leave the bed: invalid password" : "Failed to connect: Invalid password", true);
     setJoin(false, "Join Server");
     setTimeout(beginAuth, 200);
   }
@@ -266,16 +288,22 @@
       if (e.key === "ArrowLeft") setSlider(current() - 0.05);
       else if (e.key === "ArrowRight") setSlider(current() + 0.05);
     });
+    if (L.lock_hint && state.user) {               // session locked (dm-tool lock): wake up in bed, no music
+      if (window.mcSound) window.mcSound.stop();
+      show("bed");
+    }
     curLayout = L.layout || null;
     showLayout(); $("layout-msg").classList.remove("shown");
     $("btn-quit").addEventListener("click", function () { L.shutdown(); });
     $("btn-join").addEventListener("click", submit);
     $("btn-cancel").addEventListener("click", cancelLogin);
+    $("btn-leave-bed").addEventListener("click", submit);
+    $("chat").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submit(); } });
     $("btn-users-cancel").addEventListener("click", function () { show("title"); });
     $("pw").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submit(); } });
     document.addEventListener("keydown", function (e) {
       var s = document.body.getAttribute("data-screen");
-      if (e.key === "Escape" && s === "login") cancelLogin();
+      if (e.key === "Escape" && (s === "login" || s === "bed")) cancelLogin();
       else if (e.key === "Escape" && (s === "users" || s === "realms" || s === "options" || s === "credits")) show("title");
       else if (e.key === "Enter" && s === "title") show("login");
     });

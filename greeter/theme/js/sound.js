@@ -2,7 +2,7 @@
 (function () {
   "use strict";
   var tracks = (window.MC_SOUND && window.MC_SOUND.tracks) || [];
-  var VOL = 0.5, FADE_IN_MS = 2500, last = -1, music = null, fader = 0, waiting = false;
+  var VOL = 0.5, FADE_IN_MS = 2500, last = -1, music = null, fader = 0, waiting = false, stopped = false;
   var KEY = "mc-music-volume";                               // set by the Options slider, kept between boots
   try { var saved = parseFloat(localStorage.getItem(KEY)); if (saved >= 0 && saved <= 1) VOL = saved; } catch (e) {}
 
@@ -26,6 +26,7 @@
   }
 
   function playNext() {
+    if (stopped) return;
     var name = pick();
     if (!name) return;
     music = new Audio("assets/music/" + encodeURIComponent(name));
@@ -41,7 +42,7 @@
           document.removeEventListener("mousedown", go, true);
           document.removeEventListener("keydown", go, true);
           waiting = false;
-          if (music) music.play().then(function () { fadeTo(VOL, FADE_IN_MS); }).catch(function () {});
+          if (music && !stopped) music.play().then(function () { fadeTo(VOL, FADE_IN_MS); }).catch(function () {});
         };
         document.addEventListener("mousedown", go, true);
         document.addEventListener("keydown", go, true);
@@ -51,6 +52,7 @@
 
   window.mcSound = {
     fadeOut: function (ms) { fadeTo(0, ms || 400); },
+    stop: function () { stopped = true; clearInterval(fader); if (music) music.pause(); },
     volume: function () { return VOL; },
     setVolume: function (v) {
       VOL = Math.max(0, Math.min(1, v));

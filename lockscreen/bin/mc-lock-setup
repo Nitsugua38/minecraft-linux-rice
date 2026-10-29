@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Per-user lock screen setup. Run as the normal user (the installer does this for you).
+
+  mc-lock-setup --apply     Lock = Cinnamon's quick lock styled as the "You Died!" screen,
+                            Sleep = the greeter's in-bed screen (mc-sleep-lock locks through LightDM before sleeping)
+  mc-lock-setup --restore   put everything back the way it was
+  mc-lock-setup --status    show the current values
+"""
+import argparse, json, os, subprocess, sys
+
+CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+DATA_HOME = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+CFG_DIR = os.path.join(CONFIG, "mc-desktop")
+BACKUP = os.path.join(CFG_DIR, "lock-backup.json")
+GTK_CSS = os.path.join(CONFIG, "gtk-3.0", "gtk.css")
+CSS = os.environ.get("MC_LOCK_CSS", "/usr/share/minecraft-desktop/lockscreen/died.css")
+FONT = "Monocraft"
+MARK_BEGIN = "/* >>> minecraft-lockscreen (mc-lock-setup --restore removes this) >>> */"
+MARK_END = "/* <<< minecraft-lockscreen <<< */"
+
+SS = "org.cinnamon.desktop.screensaver"
+POWER = "org.cinnamon.settings-daemon.plugins.power"
+# (schema, key, value) we set; the old values are backed up first
+SETTINGS = [
+    (SS, "floating-widgets", "false"),
+    (SS, "font-time", "'%s 48'" % FONT),
+    (SS, "font-date", "'%s 18'" % FONT),
+    (SS, "font-message", "'%s 14'" % FONT),
+    (POWER, "lock-on-suspend", "false"),           # mc-sleep-lock locks (in bed) before sleeping instead
+]
+
+
+def gs(*args):
+    try:
+        return subprocess.run(["gsettings", *args], capture_output=True, text=True, timeout=10,
+                              env=dict(os.environ, LC_ALL="C"))
+    except (OSError, subprocess.SubprocessError) as e:
+        print("gsettings failed: %s" % e, file=sys.stderr)
+        return None
+
+
+def get(schema, key):
+    r = gs("get", schema, key)
+    return r.stdout.strip() if r is not None and r.returncode == 0 else None
+
+
+def put(schema, key, value):
+    r = gs("set", schema, key, value)
+    ok = r is not None and r.returncode == 0
+    if not ok:
+        print("could not set %s %s (%s)" % (schema, key, (r.stderr.strip() if r else "no gsettings")), file=sys.stderr)
+    return ok
+
+
+def load_backup():
+    if os.path.exists(BACKUP):
+        with open(BACKUP) as f:
+            return json.load(f)
+    return {}
+
+
+def save_backup(data):
+    os.makedirs(CFG_DIR, exist_ok=True)
+    with open(BACKUP, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def restore_key(name, val):
+    schema, key = name.split(" ", 1)
+    if val is None:
+        gs("reset", schema, key)
+    else:
+        put(schema, key, val)
+
+
+# ---------- gtk.css ----------
+
+def read_gtk_css():
+    try:
+        with open(GTK_CSS) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def strip_block(text):
+    """text without our @import block"""
+    out, skipping = [], False
+    for line in text.splitlines(keepends=True):
+        if line.strip() == MARK_BEGIN:
+            skipping = True
+        elif skipping and line.strip() == MARK_END:
+            skipping = False
+        elif not skipping:
+            out.append(line)
+    return "".join(out)
+
+
+def add_import():
+    old = read_gtk_css()
+    block = '%s\n@import url("file://%s");\n%s\n' % (MARK_BEGIN, CSS, MARK_END)
+    os.makedirs(os.path.dirname(GTK_CSS), exist_ok=True)
+    with open(GTK_CSS, "w") as f:                   # @import has to come before any rule, so it goes first
+        f.write(block + strip_block(old or ""))
+
+
+def remove_import(created):
+    old = read_gtk_css()
+    if old is None:
+        return
+    rest = strip_block(old)
+    if created and not rest.strip():
+        os.remove(GTK_CSS)
+    else:
+        with open(GTK_CSS, "w") as f:
+            f.write(rest)
+
+
+
+# ---------- commands ----------
+
+def apply():
+    if get(SS, "lock-enabled") is None:
+        sys.exit("Cinnamon screensaver settings not found. Run this as your normal user inside a Cinnamon session.")
+    data = load_backup()
+    for s, k, _ in SETTINGS:
+        data.setdefault("%s %s" % (s, k), get(s, k))
+    data.setdefault("gtk_css_created", read_gtk_css() is None)
+    save_backup(data)
+
+    add_import()
+    for s, k, v in SETTINGS:
+        if get(s, k) is not None:                   # skip keys this Cinnamon version does not have
+            put(s, k, v)
+    print("Lock (Super+L): the \"You Died!\" screen. Sleep: you wake up in bed.")
+
+
+def restore():
+    data = load_backup()
+    if not data:
+        print("no backup found at %s, nothing to restore" % BACKUP)
+        return
+    for s, k, _ in SETTINGS:
+        name = "%s %s" % (s, k)
+        if name in data:
+            restore_key(name, data[name])
+    remove_import(data.get("gtk_css_created", False))
+    os.remove(BACKUP)
+    print("Cinnamon's own lock screen is back")
+
+
+def status():
+    for s, k, _ in SETTINGS:
+        print("%-55s %s" % ("%s %s" % (s, k), get(s, k)))
+    print("gtk.css import:", "yes" if MARK_BEGIN in (read_gtk_css() or "") else "no")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--apply", action="store_true")
+    g.add_argument("--restore", action="store_true")
+    g.add_argument("--status", action="store_true")
+    a = ap.parse_args()
+    if os.geteuid() == 0:
+        sys.exit("Run this as your normal user, not root (settings are per user).")
+    if a.apply:
+        apply()
+    elif a.restore:
+        restore()
+    else:
+        status()
+
+
+if __name__ == "__main__":
+    main()

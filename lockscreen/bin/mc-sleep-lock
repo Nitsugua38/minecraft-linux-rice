@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Started at login. Locks through LightDM ("dm-tool lock") just before the computer sleeps, so you wake up in
+the greeter's in-bed screen. Cinnamon's own lock-on-suspend is switched off by mc-lock-setup for this.
+
+It holds a logind "delay" sleep inhibitor: when PrepareForSleep(true) arrives it locks, waits a moment for the
+greeter's screen to come up, then releases the inhibitor so the sleep goes on. Taken again after waking up.
+If Cinnamon's lock screen is already showing (you were "dead" before sleeping), it does nothing.
+"""
+import os, subprocess, sys
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+LOCK_CMD = ["dm-tool", "lock"]
+SETTLE_MS = 1500                                    # time for LightDM to switch to the greeter before sleeping
+ENV = dict(os.environ, LC_ALL="C")
+
+system = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+screensaver = Gio.Settings.new("org.cinnamon.desktop.screensaver")
+inhibitor = None
+
+
+def log(msg):
+    print("mc-sleep-lock: %s" % msg, file=sys.stderr, flush=True)
+
+
+def take_inhibitor():
+    global inhibitor
+    if inhibitor is not None:
+        return
+    try:
+        res, fds = system.call_with_unix_fd_list_sync(
+            "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", "Inhibit",
+            GLib.Variant("(ssss)", ("sleep", "Minecraft lock screen", "Lock in bed before sleeping", "delay")),
+            GLib.VariantType("(h)"), Gio.DBusCallFlags.NONE, 5000, None, None)
+        inhibitor = fds.get(res.unpack()[0])
+    except GLib.Error as e:
+        log("could not take the sleep inhibitor: %s" % e.message)
+
+
+def release_inhibitor():
+    global inhibitor
+    if inhibitor is not None:
+        os.close(inhibitor)
+        inhibitor = None
+    return False
+
+
+def cinnamon_locked():
+    """True when cinnamon-screensaver is running and active (never starts it just to ask)"""
+    try:
+        owner = session.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                  "NameHasOwner", GLib.Variant("(s)", ("org.cinnamon.ScreenSaver",)),
+                                  GLib.VariantType("(b)"), Gio.DBusCallFlags.NONE, 1000, None)
+        if not owner.unpack()[0]:
+            return False
+        active = session.call_sync("org.cinnamon.ScreenSaver", "/org/cinnamon/ScreenSaver", "org.cinnamon.ScreenSaver",
+                                   "GetActive", None, GLib.VariantType("(b)"), Gio.DBusCallFlags.NO_AUTO_START,
+                                   1000, None)
+        return active.unpack()[0]
+    except GLib.Error:
+        return False
+
+
+def on_prepare_for_sleep(conn, sender, path, iface, signal, params):
+    going_to_sleep = params.unpack()[0]
+    if not going_to_sleep:
+        take_inhibitor()
+        return
+    if screensaver.get_boolean("lock-enabled") and not cinnamon_locked():
+        try:
+            subprocess.Popen(LOCK_CMD, env=ENV, stdin=subprocess.DEVNULL)
+        except OSError as e:
+            log("could not run %s: %s" % (" ".join(LOCK_CMD), e))
+        GLib.timeout_add(SETTLE_MS, release_inhibitor)
+    else:
+        release_inhibitor()
+
+
+system.signal_subscribe("org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep",
+                        "/org/freedesktop/login1", None, Gio.DBusSignalFlags.NONE, on_prepare_for_sleep)
+take_inhibitor()
+GLib.MainLoop().run()

@@ -100,6 +100,23 @@ h1 { margin: 0; font-weight: normal; font-size: 8rem; text-shadow: 1rem 1rem 0 #
 #login-buttons { position: absolute; top: 96rem; left: 0; right: 0;                /* = 176rem from the top, like the game */
                   display: flex; flex-direction: column; gap: 4rem; }
 
+/* ---------- in bed (unlock screen): layout of the game's in-bed chat screen ---------- */
+#bed { background: #000 url("../assets/bed.png") center / cover no-repeat; image-rendering: pixelated; }
+body[data-screen="bed"] #dirt { display: none; }
+#bed-dark { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none;   /* falling asleep */
+  animation: asleep 6s ease-in 1s forwards; }
+@keyframes asleep { to { opacity: .45; } }
+#btn-leave-bed { position: absolute; left: 50%; bottom: 20rem; transform: translateX(-50%); }
+#chat { position: absolute; left: 2rem; right: 2rem; bottom: 2rem; width: auto; height: 12rem; padding: 0 2rem;
+  font: inherit; color: #fff; background: rgba(0,0,0,.5); border: none; outline: none; caret-color: #fff;
+  user-select: text; -webkit-user-select: text; }
+#chat:disabled { color: #a0a0a0; }
+#chat-lines { position: absolute; left: 2rem; bottom: 44rem; max-width: 320rem; }
+#chat-lines div { padding: 0 2rem; background: rgba(0,0,0,.5); text-shadow: 1rem 1rem 0 #3f3f3f; line-height: 9rem;
+  animation: chat-fade 10s forwards; }
+#chat-lines div.error { color: #ff5555; }
+@keyframes chat-fade { 0%, 90% { opacity: 1; } 100% { opacity: 0; } }
+
 /* ---------- user list ---------- */
 #user-list { position: absolute; top: 36rem; bottom: 64rem; left: 50%; transform: translateX(-50%);
   width: 260rem; overflow-y: auto; background: rgba(0,0,0,.5); border-top: 2rem solid #000; border-bottom: 2rem solid #000; }

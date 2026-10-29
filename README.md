@@ -20,7 +20,8 @@ Requirements: Linux Mint with Cinnamon on X11, LightDM (Mint's default), and a c
 
 **Login (`greeter`)**: a Minecraft title screen as your login screen, built on [nody-greeter](https://github.com/JezerM/nody-greeter):
 - Rotating panorama background (random set each boot), the Minecraft logo and a random yellow splash text.
-- *Play* logs in, *Switch Player* picks another user, *Session* cycles desktop sessions, *Restart* and *Quit Game* reboot and shut down.
+- *Play* logs in, *Multiplayer* picks another user, *Minecraft Realms* shows this computer's info (network, battery, uptime), *Options...* has a music volume slider, *Quit Game* shuts down.
+- The language button switches the keyboard layout; the accessibility button plays the credits.
 - The password prompt is the "Direct Connection" screen.
 - A random track from `greeter/assets/music/` plays and fades out when the session starts.
 
@@ -38,6 +39,12 @@ Requirements: Linux Mint with Cinnamon on X11, LightDM (Mint's default), and a c
 
 
 - The Cinnamon panel is auto-hidden, desktop icons are removed, and your old settings are saved so they can be restored.
+
+**Lock screen (`lockscreen`)**: two ways to stop playing.
+- **Lock** (`Super+L`, the menu, *Lock* in the Game Menu, idle): Cinnamon's instant lock styled as the death screen: the world behind a red gradient, *You Died!* and *Score: 0*, a Minecraft text field for the password, *Respawn* unlocks and *Title Screen* switches user. Only CSS, Cinnamon's own lock screen keeps doing the work.
+- **Sleep** (*Sleep* in the Game Menu, suspend, closing the lid): you wake up in bed. Just before the computer sleeps, `mc-sleep-lock` locks through LightDM, so the greeter shows the in-bed screen: your room at night (`greeter/assets/bed.png`), the password goes in the chat bar and *Leave Bed* unlocks. (Locking this way switches screens, which takes a few seconds; waking from sleep hides that.)
+
+Needs the `greeter` module for the in-bed screen.
 
 
 ---
@@ -85,6 +92,8 @@ Every asset is optional: anything missing is simply not drawn or replaced by a p
 | `progress-box.png`, `progress-bar.png` | [plymouth/assets/](plymouth/assets/) | boot screen loading bar | | 📦 |
 | `chest.png` | [desktop/assets/](desktop/assets/) | chest slot icon (other open windows) | a rendered chest icon | 📦 |
 | `world.png` (or `.jpg` / `.webp`) | [desktop/assets/](desktop/assets/) | desktop wallpaper | your own screenshot | 📦 |
+| `bed.png` | [greeter/assets/](greeter/assets/) | lock screen background: a screenshot lying in bed at night, cut above the Leave Bed button (no button, chat, hotbar or crosshair) | your own screenshot | 📦 |
+| `died_title.png`, `respawn.png`, `respawn_highlighted.png`, `title_screen.png`, `title_screen_highlighted.png` | [lockscreen/assets/](lockscreen/assets/) | the "You Died!" lock screen: title + score, and the two buttons (drawn with the game's `font/ascii.png` on `gui/sprites/widget/button*.png`) | made from game textures | 📦 |
 | **Not in the game files** | | | | |
 | `1/panorama_0.png` … `panorama_5.png` | [greeter/assets/](greeter/assets/) | rotating login background; add more sets in `2/`, `3/`… (one is picked at random) | only older versions ship them (recent ones render it live): use your own screenshots | ✋ |
 

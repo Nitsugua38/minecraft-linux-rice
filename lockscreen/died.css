@@ -1,0 +1,93 @@
+/* Minecraft "You Died!" lock screen for cinnamon-screensaver (Cinnamon's quick lock).
+   Imported at the top of ~/.config/gtk-3.0/gtk.css by mc-lock-setup; every rule starts with .csstage, so only
+   the lock screen is affected. Only styling, nothing is moved: Cinnamon's own widgets keep working.
+   Images are optional: without them the buttons fall back to plain grey and the title is missing. */
+
+/* the world (Cinnamon's dimmed wallpaper) seen through the game's red death gradient */
+.csstage stack {
+    background-color: #000000;
+    background-image: linear-gradient(to bottom, #500000, #803030);
+}
+.csstage stack > image { opacity: 0.6; }
+
+/* "You Died!" and "Score: 0" above the password row */
+.csstage .unlockbox {
+    padding-top: 170px;
+    background-image: url("file:///usr/share/minecraft-desktop/lockscreen/died_title.png");
+    background-repeat: no-repeat;
+    background-position: center top;
+    color: #ffffff;
+    font-family: "Monocraft";
+    font-size: 16px;
+    text-shadow: 2px 2px #3f3f3f;
+}
+.csstage .faceimage { opacity: 0; }
+
+.csstage .clock { color: #ffffff; font-family: "Monocraft"; text-shadow: 3px 3px #3f3f3f; }
+
+/* password: the game's text field */
+.csstage .unlockbox .passwordentry {
+    min-width: 400px;
+    min-height: 36px;
+    font-family: "Monocraft";
+    font-size: 16px;
+    color: #e0e0e0;
+    caret-color: #e0e0e0;
+    background-image: none;
+    background-color: #000000;
+    border: 2px solid #a0a0a0;
+    border-image: none;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 0 8px;
+}
+.csstage .unlockbox .passwordentry:hover { background-color: #000000; border-color: #a0a0a0; box-shadow: none; }
+.csstage .unlockbox .passwordentry:focus { border-color: #ffffff; box-shadow: none; }
+.csstage .unlockbox .passwordentry progress { border-color: #80ff20; }
+
+/* unlock = Respawn, switch user = Title Screen (the icons are hidden, the label is in the image) */
+.csstage .unlockbox .transparentbutton {
+    min-width: 400px;
+    min-height: 40px;
+    margin-left: 8px;
+    padding: 0;
+    border: none;
+    border-image: none;
+    border-radius: 0;
+    -gtk-outline-radius: 0;
+    outline-color: transparent;
+    box-shadow: none;
+    background-color: #6f6f6f;
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+}
+.csstage .unlockbox .transparentbutton image { opacity: 0; }
+.csstage .unlockbox .transparentbutton:hover,
+.csstage .unlockbox .transparentbutton:focus { background-color: #7886b8; box-shadow: none; }
+.csstage .unlockbox .transparentbutton:disabled { opacity: 0.6; }
+
+.csstage .unlockbox .transparentbutton:first-child {
+    background-image: url("file:///usr/share/minecraft-desktop/lockscreen/respawn.png");
+}
+.csstage .unlockbox .transparentbutton:first-child:hover,
+.csstage .unlockbox .transparentbutton:first-child:focus {
+    background-image: url("file:///usr/share/minecraft-desktop/lockscreen/respawn_highlighted.png");
+}
+.csstage .unlockbox .transparentbutton:last-child:not(:first-child) {
+    background-image: url("file:///usr/share/minecraft-desktop/lockscreen/title_screen.png");
+}
+.csstage .unlockbox .transparentbutton:last-child:not(:first-child):hover,
+.csstage .unlockbox .transparentbutton:last-child:not(:first-child):focus {
+    background-image: url("file:///usr/share/minecraft-desktop/lockscreen/title_screen_highlighted.png");
+}
+
+.csstage .auth-message { font-family: "Monocraft"; color: #ff5555; text-shadow: 2px 2px #3f1515; }
+.csstage .caps-message { font-family: "Monocraft"; color: #ffaa00; text-shadow: 2px 2px #2a2a00; }
+
+.csstage .toppanel {
+    font-family: "Monocraft";
+    background-image: none;
+    background-color: rgba(0, 0, 0, 0.5);
+    border-color: rgba(0, 0, 0, 0.5);
+    border-radius: 0;
+}

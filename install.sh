@@ -14,7 +14,7 @@ if [[ ! -t 0 || ! -t 1 ]]; then
     exit 1
 fi
 
-MODULES=(plymouth greeter splash desktop)
+MODULES=(plymouth greeter splash desktop lockscreen)
 
 ONLY=""
 ARGS=()
