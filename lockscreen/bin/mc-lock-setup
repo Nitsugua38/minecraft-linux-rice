@@ -133,7 +133,6 @@ def apply():
     for s, k, v in SETTINGS:
         if get(s, k) is not None:                   # skip keys this Cinnamon version does not have
             put(s, k, v)
-    print("Lock (Super+L): the \"You Died!\" screen. Sleep: you wake up in bed.")
 
 
 def restore():

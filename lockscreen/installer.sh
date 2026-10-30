@@ -93,4 +93,3 @@ EOD
 run_setup --apply
 
 say "✅ Minecraft lock screen installed! Log out and back in once (starts the sleep lock)."
-say "   Lock (Super+L) = You Died!    Sleep = wake up in bed"

@@ -7,7 +7,8 @@
 | Minecraft Boot logo | plymouth |
 | Minecraft title-screen login | greeter |
 | Minecraft Generating World loading screen | splash |
-| Minecraft HUD taskbar + app drawer | desktop |
+| Minecraft HUD taskbar + app drawer + chat terminal | desktop |
+| Minecraft You Died / Sleepin POV | lockscreen |
 
 
 Requirements: Linux Mint with Cinnamon on X11, LightDM (Mint's default), and a compositor (Cinnamon's default) for transparency. Everything is installed in userspace and system config files.
@@ -41,8 +42,8 @@ Requirements: Linux Mint with Cinnamon on X11, LightDM (Mint's default), and a c
 - The Cinnamon panel is auto-hidden, desktop icons are removed, and your old settings are saved so they can be restored.
 
 **Lock screen (`lockscreen`)**: two ways to stop playing.
-- **Lock** (`Super+L`, the menu, *Lock* in the Game Menu, idle): Cinnamon's instant lock styled as the death screen: the world behind a red gradient, *You Died!* and *Score: 0*, a Minecraft text field for the password, *Respawn* unlocks, `Esc` goes back. Only CSS, Cinnamon's own lock screen keeps doing the work.
-- **Sleep** (*Sleep* in the Game Menu, suspend, closing the lid): you wake up in bed. Just before the computer sleeps, `mc-sleep-lock` locks through LightDM, so the greeter shows the in-bed screen: your room at night (`greeter/assets/bed.png`), the password goes in the chat bar and *Leave Bed* unlocks. (Locking this way switches screens, which takes a few seconds; waking from sleep hides that.)
+- **Lock** (`Super+L`, the menu, *Lock* in the Game Menu, idle).
+- **Sleep** (*Sleep* in the Game Menu, suspend, closing the lid): you wake up in bed.
 
 Needs the `greeter` module for the in-bed screen.
 
