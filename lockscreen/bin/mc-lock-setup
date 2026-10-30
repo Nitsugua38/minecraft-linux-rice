@@ -27,6 +27,7 @@ SETTINGS = [
     (SS, "font-date", "'%s 18'" % FONT),
     (SS, "font-message", "'%s 14'" % FONT),
     (POWER, "lock-on-suspend", "false"),           # mc-sleep-lock locks (in bed) before sleeping instead
+    ("org.cinnamon.desktop.lockdown", "disable-user-switching", "true"),   # no switch-user button on the lock screen
 ]
 
 

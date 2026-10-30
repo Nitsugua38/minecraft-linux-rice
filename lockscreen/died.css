@@ -45,7 +45,6 @@
 .csstage .unlockbox .passwordentry:focus { border-color: #ffffff; box-shadow: none; }
 .csstage .unlockbox .passwordentry progress { border-color: #80ff20; }
 
-/* unlock = Respawn, switch user = Title Screen (the icons are hidden, the label is in the image) */
 .csstage .unlockbox .transparentbutton {
     min-width: 400px;
     min-height: 40px;
@@ -73,14 +72,6 @@
 .csstage .unlockbox .transparentbutton:first-child:focus {
     background-image: url("file:///usr/share/minecraft-desktop/lockscreen/respawn_highlighted.png");
 }
-.csstage .unlockbox .transparentbutton:last-child:not(:first-child) {
-    background-image: url("file:///usr/share/minecraft-desktop/lockscreen/title_screen.png");
-}
-.csstage .unlockbox .transparentbutton:last-child:not(:first-child):hover,
-.csstage .unlockbox .transparentbutton:last-child:not(:first-child):focus {
-    background-image: url("file:///usr/share/minecraft-desktop/lockscreen/title_screen_highlighted.png");
-}
-
 .csstage .auth-message { font-family: "Monocraft"; color: #ff5555; text-shadow: 2px 2px #3f1515; }
 .csstage .caps-message { font-family: "Monocraft"; color: #ffaa00; text-shadow: 2px 2px #2a2a00; }
 

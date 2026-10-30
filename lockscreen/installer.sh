@@ -58,7 +58,7 @@ done
 rm -rf "${DATA}"
 mkdir -p "${DATA}"
 install -m644 "${HERE}/died.css" "${DATA}/died.css"
-for f in died_title respawn respawn_highlighted title_screen title_screen_highlighted; do
+for f in died_title respawn respawn_highlighted; do
     if [[ -f "${HERE}/assets/${f}.png" ]]; then
         install -m644 "${HERE}/assets/${f}.png" "${DATA}/${f}.png"
     else
